@@ -1,4 +1,4 @@
-# NPC Behavior System
+# Aithena
 
 [![CI](https://github.com/sa-aris/aithena/actions/workflows/ci.yml/badge.svg)](https://github.com/sa-aris/aithena/actions/workflows/ci.yml)
 [![Live Demo](https://img.shields.io/badge/demo-GitHub_Pages-brightgreen)](https://sa-aris.github.io/NPC/)
