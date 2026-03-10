@@ -149,13 +149,13 @@ TEST("Blackboard: keys() returns all keys") {
 TEST("SharedBlackboard: set and get") {
     npc::SharedBlackboard sbb;
     sbb.set<int>("counter", 5, 0.0);
-    ASSERT_EQ(sbb.getOr<int>(\"counter\", -1), 5);
+    ASSERT_EQ(sbb.getOr<int>("counter", -1), 5);
 }
 
 TEST("SharedBlackboard: TTL expiry") {
     npc::SharedBlackboard sbb;
     sbb.set<int>("temp", 99, 0.0, 1.0);
-    ASSERT_EQ(sbb.getOr<int>(\"temp\", -1), 99);
+    ASSERT_EQ(sbb.getOr<int>("temp", -1), 99);
     sbb.pruneExpired(2.0);
     ASSERT_FALSE(sbb.has("temp"));
 }
@@ -164,7 +164,7 @@ TEST("SharedBlackboard: setIfAbsent does not overwrite") {
     npc::SharedBlackboard sbb;
     sbb.set<int>("x", 10, 0.0);
     sbb.setIfAbsent<int>("x", 20, 0.0);
-    ASSERT_EQ(sbb.getOr<int>(\"x\", -1), 10);
+    ASSERT_EQ(sbb.getOr<int>("x", -1), 10);
 }
 
 TEST("SharedBlackboard: versioning increments") {
