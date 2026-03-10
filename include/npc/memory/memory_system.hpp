@@ -9,12 +9,11 @@
 
 namespace npc {
 
-// ─── Source Reliability ───────────────────────────────────────────────────────
+// ─── Memory Source ────────────────────────────────────────────────────────────
 enum class MemorySource {
-    Observed,   // NPC directly witnessed this event
-    Hearsay     // NPC was told this by another NPC
+    Observed,
+    Hearsay
 };
-
 inline std::string memorySourceToString(MemorySource s) {
     return s == MemorySource::Observed ? "observed" : "hearsay";
 }
@@ -24,28 +23,31 @@ struct Memory {
     MemoryType   type;
     MemorySource source        = MemorySource::Observed;
 
-    std::optional<EntityId> entityId;       // subject of the memory
-    std::optional<EntityId> sourceEntity;   // who told this (hearsay only)
+    std::optional<EntityId> entityId;
+    std::optional<EntityId> sourceEntity;
 
     std::string description;
-    float emotionalImpact  = 0.0f;   // -1 (very negative) to +1 (very positive)
-    float timestamp        = 0.0f;   // game time when created / received
-    float importance       = 0.5f;   // 0 (trivial) to 1 (unforgettable)
-    float decayRate        = 0.01f;  // importance loss per game hour
-    float currentStrength  = 1.0f;   // decays over time
+    float emotionalImpact  = 0.0f;
+    float timestamp        = 0.0f;  // total game hours since sim start
+    float importance       = 0.5f;
+    float decayRate        = 0.01f;
+    float currentStrength  = 1.0f;
 
-    // Gossip-specific fields
-    float reliability      = 1.0f;   // 1.0 = directly witnessed, decays per hop
-    int   hopCount         = 0;      // how many NPC-to-NPC transfers occurred
+    // Gossip
+    float reliability      = 1.0f;
+    int   hopCount         = 0;
+
+    // Day tracking (set at creation; never changes)
+    int   dayCreated       = 1;
 };
 
-// ─── Gossip Propagation Constants ────────────────────────────────────────────
+// ─── Gossip Constants ─────────────────────────────────────────────────────────
 namespace gossip {
-    constexpr float BASE_HOP_DECAY         = 0.75f;  // reliability multiplied per hop
-    constexpr float MIN_TRUST_MULTIPLIER   = 0.50f;  // worst-case trust modifier
-    constexpr float MAX_TRUST_MULTIPLIER   = 1.00f;  // best-case trust modifier
-    constexpr float DISTORTION_THRESHOLD   = 0.35f;  // below this, info may warp
-    constexpr float MIN_ACCEPT_RELIABILITY = 0.10f;  // below this, memory is ignored
+    constexpr float BASE_HOP_DECAY         = 0.75f;
+    constexpr float MIN_TRUST_MULTIPLIER   = 0.50f;
+    constexpr float MAX_TRUST_MULTIPLIER   = 1.00f;
+    constexpr float DISTORTION_THRESHOLD   = 0.35f;
+    constexpr float MIN_ACCEPT_RELIABILITY = 0.10f;
 }
 
 // ─── MemorySystem ─────────────────────────────────────────────────────────────
@@ -54,18 +56,19 @@ public:
     explicit MemorySystem(size_t maxMemories = 100)
         : maxMemories_(maxMemories) {}
 
-    // ── Core add ──────────────────────────────────────────────────────────────
+    // ── Add ───────────────────────────────────────────────────────────────────
     void addMemory(Memory mem) {
         mem.currentStrength = 1.0f;
         memories_.push_back(std::move(mem));
-        if (memories_.size() > maxMemories_)
-            forgetWeakest();
+        if (memories_.size() > maxMemories_) forgetWeakest();
     }
 
     void addMemory(MemoryType type, const std::string& desc,
                    float emotionalImpact = 0.0f,
                    std::optional<EntityId> entity = std::nullopt,
-                   float importance = 0.5f, float timestamp = 0.0f) {
+                   float importance = 0.5f,
+                   float timestamp  = 0.0f,
+                   int   dayCreated = 1) {
         Memory m;
         m.type            = type;
         m.description     = desc;
@@ -73,73 +76,104 @@ public:
         m.entityId        = entity;
         m.importance      = importance;
         m.timestamp       = timestamp;
+        m.dayCreated      = dayCreated;
         m.source          = MemorySource::Observed;
         m.reliability     = 1.0f;
         m.hopCount        = 0;
         addMemory(std::move(m));
     }
 
-    // ── Gossip: receive hearsay from another NPC ──────────────────────────────
-    // tellerTrust: relationship score [-100, 100] with the teller.
-    // Returns true if the memory was accepted (reliability above threshold).
-    bool receiveGossip(Memory sourceMemory,
-                       EntityId tellerId,
-                       float tellerTrust,
-                       float currentTime = 0.0f) {
-        // Map [-100,100] → [0.5, 1.0]
+    // ── Gossip ────────────────────────────────────────────────────────────────
+    bool receiveGossip(Memory sourceMemory, EntityId tellerId,
+                       float tellerTrust, float currentTime = 0.0f,
+                       int   currentDay  = 1) {
         float trustMod = gossip::MIN_TRUST_MULTIPLIER +
                          (tellerTrust + 100.0f) / 200.0f *
                          (gossip::MAX_TRUST_MULTIPLIER - gossip::MIN_TRUST_MULTIPLIER);
+        float newRel = sourceMemory.reliability * gossip::BASE_HOP_DECAY * trustMod;
+        if (newRel < gossip::MIN_ACCEPT_RELIABILITY) return false;
 
-        float newReliability = sourceMemory.reliability
-                               * gossip::BASE_HOP_DECAY
-                               * trustMod;
+        Memory gm          = sourceMemory;
+        gm.source          = MemorySource::Hearsay;
+        gm.sourceEntity    = tellerId;
+        gm.reliability     = newRel;
+        gm.hopCount        = sourceMemory.hopCount + 1;
+        gm.timestamp       = currentTime;
+        gm.currentStrength = 1.0f;
+        gm.dayCreated      = currentDay;
 
-        if (newReliability < gossip::MIN_ACCEPT_RELIABILITY)
-            return false;  // too unreliable to store
-
-        Memory gossipMem          = sourceMemory;
-        gossipMem.source          = MemorySource::Hearsay;
-        gossipMem.sourceEntity    = tellerId;
-        gossipMem.reliability     = newReliability;
-        gossipMem.hopCount        = sourceMemory.hopCount + 1;
-        gossipMem.timestamp       = currentTime;
-        gossipMem.currentStrength = 1.0f;
-
-        // Low reliability warps the emotional signal and flags the description
-        if (newReliability < gossip::DISTORTION_THRESHOLD) {
-            gossipMem.emotionalImpact *= (newReliability / gossip::DISTORTION_THRESHOLD);
-            gossipMem.description      = "[distorted] " + gossipMem.description;
-            gossipMem.importance      *= 0.8f;
+        if (newRel < gossip::DISTORTION_THRESHOLD) {
+            gm.emotionalImpact *= (newRel / gossip::DISTORTION_THRESHOLD);
+            gm.description      = "[distorted] " + gm.description;
+            gm.importance      *= 0.8f;
         }
-
-        addMemory(std::move(gossipMem));
+        addMemory(std::move(gm));
         return true;
     }
 
-    // ── Produce a shareable copy for passing to another NPC ───────────────────
-    // Returns nullopt if the memory is too weak or unreliable to share.
     std::optional<Memory> prepareForGossip(const Memory& mem) const {
         if (mem.reliability     < gossip::MIN_ACCEPT_RELIABILITY) return std::nullopt;
         if (mem.currentStrength < 0.2f)                           return std::nullopt;
         return mem;
     }
 
-    // ── All memories worth gossiping about, ranked by importance × reliability ─
     std::vector<Memory> gossipCandidates(float importanceThreshold = 0.4f) const {
         std::vector<Memory> out;
-        for (const auto& m : memories_) {
-            if (m.importance      >= importanceThreshold &&
-                m.reliability     >= gossip::MIN_ACCEPT_RELIABILITY &&
+        for (const auto& m : memories_)
+            if (m.importance >= importanceThreshold &&
+                m.reliability >= gossip::MIN_ACCEPT_RELIABILITY &&
                 m.currentStrength >= 0.2f)
-            {
                 out.push_back(m);
-            }
-        }
-        std::sort(out.begin(), out.end(), [](const Memory& a, const Memory& b) {
+        std::sort(out.begin(), out.end(), [](const Memory& a, const Memory& b){
             return (a.importance * a.reliability) > (b.importance * b.reliability);
         });
         return out;
+    }
+
+    // ── Temporal recall ───────────────────────────────────────────────────────
+    // Recall memories created on a specific game day.
+    std::vector<Memory> recallByDay(int day) const {
+        std::vector<Memory> out;
+        for (const auto& m : memories_)
+            if (m.dayCreated == day) out.push_back(m);
+        return out;
+    }
+
+    // Recall memories from the last N game days (relative to currentDay).
+    std::vector<Memory> recallRecent(int dayCount, int currentDay) const {
+        std::vector<Memory> out;
+        int cutoff = currentDay - dayCount;
+        for (const auto& m : memories_)
+            if (m.dayCreated >= cutoff) out.push_back(m);
+        std::sort(out.begin(), out.end(), [](const Memory& a, const Memory& b){
+            return a.timestamp > b.timestamp;
+        });
+        return out;
+    }
+
+    // Human-readable relative timestamp: "today", "yesterday", "3 days ago"
+    static std::string relativeTime(int dayCreated, float timestamp,
+                                     int currentDay, float currentTime) {
+        int dayDiff = currentDay - dayCreated;
+        if (dayDiff == 0) {
+            // Same day — use hour
+            float hoursAgo = currentTime - timestamp;
+            if (hoursAgo < 1.0f)   return "moments ago";
+            if (hoursAgo < 2.0f)   return "an hour ago";
+            return std::to_string(static_cast<int>(hoursAgo)) + " hours ago";
+        }
+        if (dayDiff == 1) return "yesterday";
+        if (dayDiff <= 6) return std::to_string(dayDiff) + " days ago";
+        return "over a week ago";
+    }
+
+    // Get a natural-language summary of a memory.
+    // e.g. "Yesterday I witnessed: wolf attack near village"
+    std::string describeMemory(const Memory& m,
+                                int currentDay, float currentTime) const {
+        std::string when = relativeTime(m.dayCreated, m.timestamp, currentDay, currentTime);
+        std::string src  = (m.source == MemorySource::Hearsay) ? "I heard that " : "I witnessed: ";
+        return when + " — " + src + m.description;
     }
 
     // ── Time update ───────────────────────────────────────────────────────────
@@ -150,19 +184,19 @@ public:
         }
         memories_.erase(
             std::remove_if(memories_.begin(), memories_.end(),
-                [](const Memory& m) {
+                [](const Memory& m){
                     return m.currentStrength <= 0.0f && m.importance < 0.7f;
                 }),
             memories_.end());
     }
 
-    // ── Recall helpers ────────────────────────────────────────────────────────
+    // ── Standard recall ───────────────────────────────────────────────────────
     std::vector<Memory> recall(MemoryType type) const {
         std::vector<Memory> result;
         for (const auto& m : memories_)
             if (m.type == type) result.push_back(m);
         std::sort(result.begin(), result.end(),
-            [](const Memory& a, const Memory& b) { return a.timestamp > b.timestamp; });
+            [](const Memory& a, const Memory& b){ return a.timestamp > b.timestamp; });
         return result;
     }
 
@@ -174,7 +208,6 @@ public:
         return result;
     }
 
-    // Only directly observed memories
     std::vector<Memory> recallObserved(MemoryType type) const {
         std::vector<Memory> result;
         for (const auto& m : memories_)
@@ -183,19 +216,15 @@ public:
         return result;
     }
 
-    // Only hearsay memories
     std::vector<Memory> recallHearsay() const {
         std::vector<Memory> result;
         for (const auto& m : memories_)
-            if (m.source == MemorySource::Hearsay)
-                result.push_back(m);
+            if (m.source == MemorySource::Hearsay) result.push_back(m);
         return result;
     }
 
-    // Opinion weighted by reliability: hearsay matters less than observation
     float getOpinionOf(EntityId entity) const {
-        float opinion = 0.0f;
-        int count = 0;
+        float opinion = 0.0f; int count = 0;
         for (const auto& m : memories_) {
             if (m.entityId.has_value() && *m.entityId == entity) {
                 opinion += m.emotionalImpact * m.currentStrength * m.reliability;
@@ -209,8 +238,7 @@ public:
                      std::optional<EntityId> entity = std::nullopt) const {
         for (const auto& m : memories_)
             if (m.type == type)
-                if (!entity.has_value() || m.entityId == entity)
-                    return true;
+                if (!entity.has_value() || m.entityId == entity) return true;
         return false;
     }
 
@@ -219,18 +247,18 @@ public:
     Memory* mostRecent() {
         if (memories_.empty()) return nullptr;
         return &*std::max_element(memories_.begin(), memories_.end(),
-            [](const Memory& a, const Memory& b) { return a.timestamp < b.timestamp; });
+            [](const Memory& a, const Memory& b){ return a.timestamp < b.timestamp; });
     }
 
 private:
     void forgetWeakest() {
         if (memories_.empty()) return;
-        auto weakest = std::min_element(memories_.begin(), memories_.end(),
-            [](const Memory& a, const Memory& b) {
+        auto it = std::min_element(memories_.begin(), memories_.end(),
+            [](const Memory& a, const Memory& b){
                 return (a.currentStrength * a.importance * a.reliability) <
                        (b.currentStrength * b.importance * b.reliability);
             });
-        memories_.erase(weakest);
+        memories_.erase(it);
     }
 
     std::vector<Memory> memories_;
