@@ -7,6 +7,7 @@
 [![Header-only](https://img.shields.io/badge/header--only-yes-green.svg)](#integration)
 [![WebAssembly](https://img.shields.io/badge/WebAssembly-WASM-654FF0)](https://webassembly.org/)
 [![Lua](https://img.shields.io/badge/Lua-5.4-2C2D72?logo=lua)](https://www.lua.org/)
+[![C API](https://img.shields.io/badge/C_API-Unity%20%7C%20Unreal%20%7C%20Godot-orange.svg)](#c-api--unity--unreal--godot)
 
 A self-contained NPC AI framework for games, written in C++17. Drop the `include/` directory into any project and you get 20 interconnected systems — from low-level pathfinding and spatial queries to high-level faction politics, relationship history, and narrative-aware dialogue hooks.
 
@@ -293,6 +294,90 @@ bridge.addLuaState(guard->fsm, "combat", guard.get(),
 
 The bridge exposes a full NPC API to Lua: position, health, emotions, needs, blackboard keys, FSM transitions, memory, movement, and `world_time()` / `world_hour()` globals. If Lua 5.4 is not installed, the bridge target is silently skipped and the rest of the build is unaffected.
 
+### C API — Unity / Unreal / Godot
+
+Build a shared library exposing a pure-C interface:
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DNPC_SHARED=ON
+cmake --build build --target npc_shared
+# → build/libnpc_shared.so  (Linux)
+# → build/npc_shared.dll    (Windows)
+```
+
+The header `include/npc/npc_capi.h` is plain C — no C++ required on the consumer side. Drop the shared library and the header into any engine that supports a C FFI.
+
+**Unity (C# P/Invoke)**
+
+```csharp
+using System.Runtime.InteropServices;
+
+public class NpcBinding : MonoBehaviour
+{
+    const string Lib = "npc_shared";
+
+    [DllImport(Lib)] static extern IntPtr npc_world_create(int w, int h);
+    [DllImport(Lib)] static extern void   npc_world_update(IntPtr world, float dt);
+    [DllImport(Lib)] static extern IntPtr npc_create(IntPtr world, uint id,
+                                                      string name, int type);
+    [DllImport(Lib)] static extern void   npc_deal_damage(IntPtr npc, float amount);
+    [DllImport(Lib)] static extern float  npc_get_health_percent(IntPtr npc);
+    [DllImport(Lib)] static extern float  npc_get_mood(IntPtr npc);
+    [DllImport(Lib)] static extern void   npc_fsm_set_state(IntPtr npc, string state);
+    [DllImport(Lib)] static extern void   npc_world_destroy(IntPtr world);
+
+    IntPtr _world;
+    IntPtr _guard;
+
+    void Start() {
+        _world = npc_world_create(64, 64);
+        _guard = npc_create(_world, 1, "Aldric", 0 /* NPC_TYPE_GUARD */);
+    }
+
+    void Update() {
+        npc_world_update(_world, Time.deltaTime);
+
+        if (npc_get_health_percent(_guard) < 0.25f)
+            npc_fsm_set_state(_guard, "flee");
+    }
+
+    void OnDestroy() => npc_world_destroy(_world);
+}
+```
+
+**Unreal Engine (native plugin)**
+
+```cpp
+// MyNPCPlugin.h — include the plain-C header, no engine conflicts
+#include "npc/npc_capi.h"
+
+// In BeginPlay:
+World = npc_world_create(128, 128);
+Guard = npc_create(World, UniqueId, TCHAR_TO_ANSI(*NpcName), NPC_TYPE_GUARD);
+
+// Register an Unreal delegate as a C callback:
+npc_world_on_combat_event(World,
+    [](const char* json, void* ud) {
+        UE_LOG(LogTemp, Warning, TEXT("CombatEvent: %s"), UTF8_TO_TCHAR(json));
+    }, nullptr);
+```
+
+**Godot (GDExtension)**
+
+```cpp
+// In _process(double delta):
+npc_world_update(world_, static_cast<float>(delta));
+
+NpcVec2 pos = npc_get_position(guard_);
+set_position(Vector2(pos.x, pos.y));
+
+// Mood drives animation blend tree:
+float mood = npc_get_mood(guard_);
+animation_tree_->set("parameters/MoodBlend/blend_amount", mood);
+```
+
+The full C API covers: world lifecycle and clock, NPC create/destroy, position and movement, health and combat, emotions and needs (7 types each), FSM with C function-pointer callbacks, blackboard (float / int / bool / string), episodic memory, and a standalone `RelationshipSystem` with narrative recall.
+
 ### Run the demo
 
 ```bash
@@ -467,10 +552,12 @@ NPC/
 │   ├── threading/      thread_safety, task_scheduler, parallel_ticker
 │   ├── serialization/  json, npc_serializer
 │   ├── scripting/      lua_bridge — Lua 5.4 scripting bridge
+│   ├── npc_capi.h      — pure-C binding layer (Unity / Unreal / Godot FFI)
 │   └── npc.hpp         main NPC composite class
 ├── src/
 │   ├── npc.cpp
 │   ├── world/world.cpp
+│   ├── npc_capi.cpp    — C ABI implementation (build with -DNPC_SHARED=ON)
 │   └── wasm_api.cpp    — Emscripten C exports (npc_init / npc_step / npc_is_complete)
 ├── web/
 │   └── index.html      — single-file browser demo (dark terminal theme, WebAssembly)
