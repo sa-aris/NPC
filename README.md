@@ -11,6 +11,8 @@ A self-contained NPC AI framework for games, written in C++17. Drop the `include
 
 No dependencies. No engine lock-in. No runtime overhead you didn't ask for.
 
+![NPC Behavior System demo](demo.gif)
+
 ---
 
 ## Live Demo
