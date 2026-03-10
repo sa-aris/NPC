@@ -130,7 +130,8 @@ struct RelationshipData {
     std::vector<RelationshipEvent> history;
     static constexpr std::size_t  MAX_HISTORY = 64;
 
-    // Decay config (per-pair overrideable)
+    // Decay config (per-pair overrideable, set from RelationshipSystem::Config on first access)
+    bool  initialized_     = false; // set to true by RelationshipSystem::get()
     float decayRatePerHour = 0.02f; // how much |value| drifts toward 0 per hour
     float decayFloor       = 0.0f;  // value below which decay stops
 
@@ -262,7 +263,8 @@ public:
     // ── Core record access ────────────────────────────────────────────────────
     RelationshipData& get(const std::string& a, const std::string& b) {
         auto& d = rels_[{a, b}];
-        if (!d.decayRatePerHour) {
+        if (!d.initialized_) {
+            d.initialized_     = true;
             d.decayRatePerHour = config.defaultDecayRatePerHour;
             d.decayFloor       = config.decayFloor;
         }
