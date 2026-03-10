@@ -335,6 +335,11 @@ public:
         d.value = std::max(-100.0f, std::min(100.0f, v));
     }
 
+    void modifyValue(const std::string& a, const std::string& b, float delta) {
+        auto& d = get(a, b);
+        d.value = std::max(-100.0f, std::min(100.0f, d.value + delta));
+    }
+
     void setTrust(const std::string& a, const std::string& b, float t) {
         auto& d = get(a, b);
         d.trust = std::max(0.0f, std::min(100.0f, t));
