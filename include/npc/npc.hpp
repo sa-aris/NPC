@@ -99,8 +99,8 @@ public:
 
         // Trade: re-apply personality+skill combined modifiers
         trade.applyPersonality(
-            personality.buyMarkupMultiplier()   * b.tradeMarkupMul(),
-            personality.sellMarkdownMultiplier()* b.tradeMarkdownMul(),
+            personality.buyMarkupMultiplier()   * skills.tradeMarkupMul(),
+            personality.sellMarkdownMultiplier()* skills.tradeMarkdownMul(),
             personality.scarcityMultiplier(),
             personality.relationshipDiscountMultiplier());
 
