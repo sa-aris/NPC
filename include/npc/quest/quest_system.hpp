@@ -499,7 +499,7 @@ private:
                 inv->addItem(itemId, qty);
         }
         if (rel && q->giverId != INVALID_ENTITY)
-            rel->modifyRelationship(takerId, q->giverId, q->reward.relationDelta);
+            rel->modifyValue(std::to_string(takerId), std::to_string(q->giverId), q->reward.relationDelta);
 
         // Unlock next quests
         for (const auto& nextId : q->reward.unlocksQuests)
@@ -523,7 +523,7 @@ private:
                    float currentTime, EventBus* bus, RelationshipSystem* rel) {
         q->status = (reason == "abandoned") ? QuestStatus::Abandoned : QuestStatus::Failed;
         if (rel && q->giverId != INVALID_ENTITY && q->failRelDelta != 0.0f)
-            rel->modifyRelationship(takerId, q->giverId, q->failRelDelta);
+            rel->modifyValue(std::to_string(takerId), std::to_string(q->giverId), q->failRelDelta);
         if (bus) bus->publish(QuestFailedEvent{takerId, q->id, reason});
     }
 
