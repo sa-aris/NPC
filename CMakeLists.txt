@@ -46,6 +46,53 @@ target_compile_options(run_tests PRIVATE
 enable_testing()
 add_test(NAME npc_tests COMMAND run_tests)
 
+# ─── Lua Scripting Bridge (optional) ─────────────────────────────────
+# Requires Lua 5.4 headers + library. On Ubuntu: sudo apt install liblua5.4-dev
+# Disable with: cmake -DNPC_LUA_BRIDGE=OFF
+
+option(NPC_LUA_BRIDGE "Build Lua scripting bridge and lua_village demo" ON)
+
+if(NPC_LUA_BRIDGE AND NOT EMSCRIPTEN)
+    find_package(Lua 5.4 QUIET)
+
+    if(NOT LUA_FOUND)
+        # Try pkg-config as fallback (handles lua5.4 package name on Debian/Ubuntu)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(LUA QUIET lua5.4)
+            if(LUA_FOUND)
+                set(LUA_INCLUDE_DIR ${LUA_INCLUDE_DIRS})
+                set(LUA_LIBRARIES   ${LUA_LINK_LIBRARIES})
+            endif()
+        endif()
+    endif()
+
+    if(LUA_FOUND)
+        message(STATUS "Lua found: ${LUA_INCLUDE_DIR}")
+
+        add_library(npc_lua STATIC src/lua_bridge.cpp)
+        target_include_directories(npc_lua PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${LUA_INCLUDE_DIR}
+        )
+        target_link_libraries(npc_lua PUBLIC npc_lib ${LUA_LIBRARIES})
+        target_compile_definitions(npc_lua PUBLIC NPC_HAS_LUA=1)
+
+        add_executable(lua_village examples/lua_village.cpp)
+        target_link_libraries(lua_village PRIVATE npc_lua)
+        # Pass script directory so the binary can find the .lua files
+        target_compile_definitions(lua_village PRIVATE
+            NPC_SCRIPT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/scripts"
+        )
+
+        add_test(NAME lua_village_smoke
+                 COMMAND lua_village "${CMAKE_CURRENT_SOURCE_DIR}/examples/scripts")
+    else()
+        message(STATUS "Lua 5.4 not found — skipping npc_lua and lua_village."
+                       " Install liblua5.4-dev to enable.")
+    endif()
+endif()
+
 # ─── WASM target (Emscripten only) ───────────────────────────────────
 # Build: emcmake cmake -B build-wasm && cmake --build build-wasm --target npc_wasm
 
