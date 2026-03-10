@@ -653,7 +653,7 @@ TEST("LODSystem: close NPC promoted to Active") {
     std::vector<std::shared_ptr<npc::NPC>> npcs = {npc1};
     for (int i = 0; i < 10; ++i)
         lod.update(npcs, static_cast<float>(i) * 0.016f, 0.016f);
-    ASSERT_EQ(lod.tier(1u), npc::LODTier::Active);
+    ASSERT_EQ(static_cast<int>(lod.tier(1u)), static_cast<int>(npc::LODTier::Active));
 }
 
 TEST("LODSystem: very distant NPC becomes Dormant") {
@@ -670,7 +670,7 @@ TEST("LODSystem: very distant NPC becomes Dormant") {
     std::vector<std::shared_ptr<npc::NPC>> npcs = {npc1};
     for (int i = 0; i < 30; ++i)
         lod.update(npcs, static_cast<float>(i) * 0.1f, 0.1f);
-    ASSERT_EQ(lod.tier(1u), npc::LODTier::Dormant);
+    ASSERT_EQ(static_cast<int>(lod.tier(1u)), static_cast<int>(npc::LODTier::Dormant));
 }
 
 TEST("LODSystem: pin prevents demotion") {
@@ -688,7 +688,7 @@ TEST("LODSystem: pin prevents demotion") {
     std::vector<std::shared_ptr<npc::NPC>> npcs = {npc1};
     for (int i = 0; i < 50; ++i)
         lod.update(npcs, static_cast<float>(i) * 0.1f, 0.1f);
-    ASSERT_EQ(lod.tier(1u), npc::LODTier::Active);
+    ASSERT_EQ(static_cast<int>(lod.tier(1u)), static_cast<int>(npc::LODTier::Active));
 }
 
 TEST("LODSystem: toTickThisFrame returns registered NPCs") {
