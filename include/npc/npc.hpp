@@ -21,6 +21,7 @@
 #include "navigation/pathfinding.hpp"
 #include "personality/personality_traits.hpp"
 #include "quest/quest_system.hpp"
+#include "skill/skill_system.hpp"
 
 #include <string>
 #include <vector>
@@ -60,10 +61,10 @@ public:
     DialogSystem     dialog;
     TradeSystem      trade;
     ScheduleSystem   schedule;
+    SkillSystem      skills;
     std::shared_ptr<Pathfinder> pathfinder;
 
     // ─── Quest ───────────────────────────────────────────────────────
-    // Quests this NPC can offer (registered by the world/scenario)
     std::vector<std::string> offeredQuestIds;
 
     // ─── AI Control ──────────────────────────────────────────────────
@@ -81,10 +82,33 @@ public:
     bool verbose = true;
 
     NPC(EntityId id, std::string name, NPCType type)
-        : id(id), name(std::move(name)), type(type) {}
+        : id(id), name(std::move(name)), type(type)
+        , skills(id) {}
 
     // ─── Main update ─────────────────────────────────────────────────
     void update(float dt, GameWorld& world);
+
+    // ─── Apply skill bonuses to subsystems ───────────────────────────
+    // Call once after level-up or on init.
+    void applySkillBonuses() {
+        const SkillBonuses& b = skills.bonuses();
+
+        // Combat: scale max health and stamina by bonuses
+        combat.stats.maxHealth  = combat.stats.maxHealth  + b.maxHealthBonus;
+        combat.stats.stamina.max= combat.stats.stamina.max + b.maxStaminaBonus;
+
+        // Trade: re-apply personality+skill combined modifiers
+        trade.applyPersonality(
+            personality.buyMarkupMultiplier()   * b.tradeMarkupMul(),
+            personality.sellMarkdownMultiplier()* b.tradeMarkdownMul(),
+            personality.scarcityMultiplier(),
+            personality.relationshipDiscountMultiplier());
+
+        // Fatigue modifier: store on schedule conditions
+        ScheduleConditions cond = schedule.conditions();
+        // (fatigueMul is applied in updateFatigue; no stored field needed here)
+        (void)cond;
+    }
 
     // ─── Movement ────────────────────────────────────────────────────
     void moveTo(Vec2 target) {
@@ -104,20 +128,16 @@ public:
         if (!isMoving) return;
 
         Vec2 target = (!currentPath.empty() && pathIndex < currentPath.size())
-                      ? currentPath[pathIndex]
-                      : moveTarget;
+                      ? currentPath[pathIndex] : moveTarget;
 
         Vec2  dir  = target - position;
         float dist = dir.length();
 
         if (dist < 0.5f) {
             position = target;
-            if (!currentPath.empty() && pathIndex < currentPath.size() - 1) {
+            if (!currentPath.empty() && pathIndex < currentPath.size() - 1)
                 ++pathIndex;
-            } else {
-                isMoving = false;
-                currentPath.clear();
-            }
+            else { isMoving = false; currentPath.clear(); }
             return;
         }
 
@@ -138,12 +158,10 @@ public:
                 0.6f * personality.angerIntensityMultiplier(), 2.0f);
             emotions.depletNeed(NeedType::Safety,
                 30.0f * personality.fearIntensityMultiplier());
-            memory.addMemory(MemoryType::Combat,
-                "Was attacked", -0.8f, e.attacker, 0.9f);
+            memory.addMemory(MemoryType::Combat, "Was attacked", -0.8f, e.attacker, 0.9f);
         }
         if (e.killed && e.attacker == id) {
-            memory.addMemory(MemoryType::Combat,
-                "Defeated an enemy", 0.3f, e.defender, 0.8f);
+            memory.addMemory(MemoryType::Combat, "Defeated an enemy", 0.3f, e.defender, 0.8f);
         }
     }
 
@@ -157,7 +175,6 @@ public:
         }
     }
 
-    // Quest events (called by QuestManager callbacks or world logic)
     void onQuestCompleted(const QuestCompletedEvent& e) {
         if (e.takerId != id && e.giverId != id) return;
         memory.addMemory(MemoryType::Interaction,
@@ -171,15 +188,26 @@ public:
             std::nullopt, 0.5f);
     }
 
+    void onSkillLevelUp(const SkillLevelUpEvent& e) {
+        if (e.entityId != id) return;
+        std::string msg = skillDomainToString(e.domain)
+                        + " reached level " + std::to_string(e.newLevel);
+        if (!e.perkUnlocked.empty()) msg += " — unlocked: " + e.perkUnlocked;
+        memory.addMemory(MemoryType::Interaction, msg, 0.5f, std::nullopt, 0.7f);
+        applySkillBonuses();
+    }
+
     void subscribeToEvents(EventBus& events) {
-        events.subscribe<CombatEvent>([this](const CombatEvent& e) { onCombatEvent(e); });
-        events.subscribe<WorldEvent> ([this](const WorldEvent& e)  { onWorldEvent(e); });
+        events.subscribe<CombatEvent>([this](const CombatEvent& e)    { onCombatEvent(e); });
+        events.subscribe<WorldEvent> ([this](const WorldEvent& e)     { onWorldEvent(e);  });
         events.subscribe<QuestCompletedEvent>([this](const QuestCompletedEvent& e) {
-            onQuestCompleted(e);
-        });
+            onQuestCompleted(e); });
         events.subscribe<QuestFailedEvent>([this](const QuestFailedEvent& e) {
-            onQuestFailed(e);
-        });
+            onQuestFailed(e); });
+        events.subscribe<SkillLevelUpEvent>([this](const SkillLevelUpEvent& e) {
+            onSkillLevelUp(e); });
+        // Wire skill system XP subscriptions
+        skills.subscribeToEvents(events);
     }
 
     // ─── Info ────────────────────────────────────────────────────────
@@ -188,20 +216,21 @@ public:
         ss << name << " (" << npcTypeToString(type) << ")"
            << " at " << position.toString()
            << " | HP: "  << static_cast<int>(combat.stats.health)
-           << "/"  << static_cast<int>(combat.stats.maxHealth)
-           << " | STA: " << static_cast<int>(combat.stats.stamina.current)
-           << "/"  << static_cast<int>(combat.stats.stamina.max);
-        if (combat.stats.mana.max > 0.0f)
-            ss << " | MP: " << static_cast<int>(combat.stats.mana.current)
-               << "/"  << static_cast<int>(combat.stats.mana.max);
-        ss << " | State: " << fsm.currentState();
-        if (useGOAP && goap.hasPlan())
-            ss << " | Goal: " << goap.currentGoalName()
-               << " [" << goap.currentActionName() << "]";
-        ss << " | Mood: "   << emotions.getMoodString()
-           << " | Traits: " << personality.traitSummary();
-        if (!offeredQuestIds.empty())
-            ss << " | Quests: " << offeredQuestIds.size();
+           << "/"        << static_cast<int>(combat.stats.maxHealth)
+           << " | State: " << fsm.currentState()
+           << " | Mood: "  << emotions.getMoodString()
+           << " | Traits: "<< personality.traitSummary();
+        // Show non-zero skill levels
+        bool first = true;
+        for (auto d : {SkillDomain::Combat, SkillDomain::Trade,
+                       SkillDomain::Farming, SkillDomain::Crafting,
+                       SkillDomain::Social,  SkillDomain::Leadership}) {
+            int lv = skills.level(d);
+            if (lv > 0) {
+                if (first) { ss << " | Skills:"; first = false; }
+                ss << " " << skillDomainToString(d) << lv;
+            }
+        }
         return ss.str();
     }
 
