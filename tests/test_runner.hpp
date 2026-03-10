@@ -137,11 +137,13 @@ struct TestRegistrar {
 
 // ─── TEST macro ────────────────────────────────────────────────────────────────
 
+#define NPC_TEST_CAT_(a, b) a##b
+#define NPC_TEST_CAT(a, b)  NPC_TEST_CAT_(a, b)
 #define TEST(name) \
-    static void _test_fn_##__LINE__(); \
-    static ::npc::test::TestRegistrar _reg_##__LINE__(name, __FILE__, __LINE__, \
-                                                       _test_fn_##__LINE__); \
-    static void _test_fn_##__LINE__()
+    static void NPC_TEST_CAT(_test_fn_, __LINE__)(); \
+    static ::npc::test::TestRegistrar NPC_TEST_CAT(_reg_, __LINE__)( \
+        name, __FILE__, __LINE__, NPC_TEST_CAT(_test_fn_, __LINE__)); \
+    static void NPC_TEST_CAT(_test_fn_, __LINE__)()
 
 // ─── Test runner ───────────────────────────────────────────────────────────────
 
