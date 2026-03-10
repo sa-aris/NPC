@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
-project(NPCBehaviorSystem
+project(Aithena
     VERSION 1.0.0
-    DESCRIPTION "Comprehensive NPC Behavior System in C++17"
+    DESCRIPTION "C++17 NPC AI framework — FSM, behavior trees, emotions, memory, pathfinding, relationships, Lua scripting"
     LANGUAGES CXX
 )
 

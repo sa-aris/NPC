@@ -9,7 +9,7 @@
 [![Lua](https://img.shields.io/badge/Lua-5.4-2C2D72?logo=lua)](https://www.lua.org/)
 [![C API](https://img.shields.io/badge/C_API-Unity%20%7C%20Unreal%20%7C%20Godot-orange.svg)](#c-api--unity--unreal--godot)
 
-A self-contained NPC AI framework for games, written in C++17. Drop the `include/` directory into any project and you get 20 interconnected systems — from low-level pathfinding and spatial queries to high-level faction politics, relationship history, and narrative-aware dialogue hooks.
+**Aithena** is a self-contained NPC AI framework for games, written in C++17. Drop the `include/` directory into any project and you get 20 interconnected systems — from low-level pathfinding and spatial queries to high-level faction politics, relationship history, and narrative-aware dialogue hooks.
 
 No dependencies. No engine lock-in. No runtime overhead you didn't ask for.
 

@@ -1,0 +1,16 @@
+{
+  "name": "aithena",
+  "version": "1.0.0",
+  "description": "C++17 NPC AI framework — FSM, behavior trees, emotions, memory, pathfinding, relationships, Lua scripting",
+  "homepage": "https://github.com/sa-aris/aithena",
+  "license": "MIT",
+  "supports": "!uwp & !xbox",
+  "features": {
+    "lua": {
+      "description": "Lua 5.4 scripting bridge",
+      "dependencies": [
+        { "name": "lua", "version>=": "5.4" }
+      ]
+    }
+  }
+}
