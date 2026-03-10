@@ -59,3 +59,52 @@ jobs:
       - name: Test
         working-directory: build
         run: ctest --output-on-failure
+
+  benchmark:
+    name: Benchmark (ubuntu-22.04 / gcc-12)
+    runs-on: ubuntu-22.04
+    # Only run on push to main — skip PRs to keep feedback fast
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GCC 12
+        run: sudo apt-get install -y g++-12
+
+      - name: Configure
+        env:
+          CC: gcc-12
+          CXX: g++-12
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNPC_BENCHMARKS=ON \
+            -DNPC_LUA_BRIDGE=OFF
+
+      - name: Build
+        run: cmake --build build --target run_benchmarks --parallel
+
+      - name: Run benchmarks
+        run: |
+          ./build/run_benchmarks --quick --csv > bench_raw.csv
+          ./build/run_benchmarks --quick      > bench_text.txt
+          cat bench_text.txt
+
+      - name: Write job summary
+        run: |
+          echo "## NPC Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`--quick\` mode (5 iterations), Release build, GCC 12, Ubuntu 22.04" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat bench_text.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            bench_text.txt
+            bench_raw.csv
+          retention-days: 30
