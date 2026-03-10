@@ -96,6 +96,24 @@ if(NPC_LUA_BRIDGE AND NOT EMSCRIPTEN)
     endif()
 endif()
 
+# ─── Performance Benchmarks (optional) ──────────────────────────────
+# Build: cmake -B build -DNPC_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release
+#        cmake --build build --target run_benchmarks
+#        ./build/run_benchmarks [--quick] [--csv]
+
+option(NPC_BENCHMARKS "Build performance benchmark suite" OFF)
+
+if(NPC_BENCHMARKS)
+    add_executable(run_benchmarks benchmarks/run_benchmarks.cpp)
+    target_include_directories(run_benchmarks PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_link_libraries(run_benchmarks PRIVATE npc_lib)
+    target_compile_options(run_benchmarks PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -march=native>
+    )
+endif()
+
 # ─── C API shared library (optional, for Unity/Unreal/Godot) ─────────
 # Build: cmake -B build -DNPC_SHARED=ON && cmake --build build --target npc_shared
 # On Windows: links with NPC_BUILDING_DLL defined automatically.

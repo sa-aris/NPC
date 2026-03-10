@@ -511,18 +511,53 @@ for (auto id : lod.toTickThisFrame(npc::LODTier::Background)) {
 
 ## Performance
 
-All figures on a single core, Intel i7-12700K, `-O2`:
+Measured on a single core, GCP VM (8 vCPU), `-O3 -march=native`, C++17, 20 iterations averaged.
+Run the full suite yourself: `cmake -B build -DNPC_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build --target run_benchmarks && ./build/run_benchmarks`
 
-| Scenario | NPCs | Frame time |
-|----------|------|-----------|
-| Full A* pathfind (10×10 grid) | — | ~0.08 ms |
-| Full A* pathfind (64×64 grid) | — | ~0.6 ms |
-| Radius query, SpatialGrid | 10 000 entities | ~0.02 ms |
-| Active NPC full tick | 100 | ~1.4 ms |
-| Background tick (emotion + movement) | 500 | ~0.9 ms |
-| Dormant tick (emotion only) | 2000 | ~0.3 ms |
+### Full NPC tick — `world.update()`, all systems, 1 frame
 
-The LOD system is designed so that a world with 2000 NPCs consumes roughly the same CPU budget as one with 100, assuming typical player movement patterns.
+The full tick runs FSM, emotions, needs, perception, contagion, memory, blackboard, and movement for every NPC. Contagion and perception both loop over all other NPCs, making this **O(N²)**. The LOD system is the production mitigation.
+
+| Active NPCs | Frame time | 60 Hz budget remaining |
+|-------------|-----------|----------------------|
+| 50  | 0.10 ms | 99.4% |
+| 100 | 0.29 ms | 98.3% |
+| 250 | 1.39 ms | 91.6% |
+| 500 | 5.07 ms | 69.6% |
+| 1 000 | 19.2 ms | 0% (over budget) |
+
+**Rule of thumb: keep active-tick NPCs below ~300 for comfortable 60 Hz.** Use the LOD system to demote distant NPCs to background or dormant tiers.
+
+### Isolated subsystems
+
+| Subsystem | Count | Frame time |
+|-----------|-------|-----------|
+| Emotion + needs update | 10 000 | 0.61 ms |
+| FSM update (3 states, transitions) | 10 000 | 1.80 ms |
+| FSM update (3 states, transitions) | 50 000 | 10.6 ms |
+| Memory system decay | 10 000 | 0.84 ms |
+| SpatialGrid update | 50 000 | 0.32 ms |
+| SpatialGrid radius query | 50 000 | 0.006 ms |
+
+### Pathfinding — A\*
+
+| Grid | Time per query | With LRU cache hit |
+|------|---------------|-------------------|
+| 16×16  | 0.006 ms | ~0.0001 ms (360×) |
+| 64×64  | 0.035 ms | ~0.0001 ms (350×) |
+| 128×128 | 0.067 ms | — |
+| 256×256 | 0.40 ms | — |
+
+### Memory footprint
+
+| | Size |
+|---|---|
+| `sizeof(NPC)` | 2 368 bytes (2 KB stack) |
+| Estimated heap per NPC | ~6–18 KB (containers, history depth) |
+| 1 000 NPCs | ~10 MB |
+| 10 000 NPCs | ~100 MB |
+
+The LOD system is designed so that a world with thousands of NPCs consumes roughly the same CPU budget as one with ~300, assuming typical player movement patterns.
 
 ---
 
@@ -567,6 +602,8 @@ NPC/
 │   └── scripts/
 │       ├── guard.lua           — guard FSM: patrol/alert/combat/flee/recover
 │       └── merchant.lua        — merchant schedule: open/lunch/closed/worried
+├── benchmarks/
+│   └── run_benchmarks.cpp  — performance suite (build with -DNPC_BENCHMARKS=ON)
 ├── tests/
 │   ├── test_runner.hpp — zero-dependency test framework
 │   └── run_tests.cpp   — test suite (~75 tests)
