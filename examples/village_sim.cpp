@@ -73,6 +73,8 @@ void logRelationship(const std::string& timeStr, const std::string& a,
                      const std::string& b, EntityId idA, EntityId idB, float delta,
                      const PersonalityTraits* traitsA = nullptr,
                      const PersonalityTraits* traitsB = nullptr);
+void processEmotionContagion(GameWorld& world);
+void printEmotionContagionTable(const std::string& timeStr, GameWorld& world);
 
 // =======================================================================
 //  MAIN
@@ -179,6 +181,7 @@ int main() {
             std::cout << "\n--- " << world.time().formatClock()
                       << " (" << timeOfDayToString(world.time().getTimeOfDay())
                       << ") ---\n";
+            printEmotionContagionTable(world.time().formatClock(), world);
         }
 
         // --- Combat rounds ---
@@ -188,6 +191,9 @@ int main() {
 
         // --- World update (triggers scheduled events + NPC updates) ---
         world.update(dt);
+
+        // --- Emotion contagion (proximity-based spreading) ---
+        processEmotionContagion(world);
     }
 
     // =================================================================
@@ -245,6 +251,121 @@ int main() {
     std::cout << "\n  Phase 2 Simulation complete.\n";
 
     return 0;
+}
+
+// =======================================================================
+//  EMOTION CONTAGION
+// =======================================================================
+
+// ANSI color codes per emotion type
+static const char* emotionColor(EmotionType e) {
+    switch (e) {
+        case EmotionType::Happy:     return "\033[1;33m"; // bright yellow
+        case EmotionType::Sad:       return "\033[1;34m"; // bright blue
+        case EmotionType::Angry:     return "\033[1;31m"; // bright red
+        case EmotionType::Fearful:   return "\033[1;35m"; // bright magenta
+        case EmotionType::Disgusted: return "\033[0;32m"; // green
+        case EmotionType::Surprised: return "\033[1;36m"; // bright cyan
+        case EmotionType::Neutral:   return "\033[0;37m"; // grey
+    }
+    return "\033[0m";
+}
+static const char* RESET = "\033[0m";
+
+// Intensity bar: 5 blocks, each block = 0.2
+static std::string intensityBar(float intensity) {
+    int filled = static_cast<int>(std::round(intensity * 5.0f));
+    filled = std::max(0, std::min(5, filled));
+    std::string bar;
+    for (int i = 0; i < filled;     ++i) bar += "\u2588"; // █
+    for (int i = filled; i < 5; ++i) bar += "\u2591"; // ░
+    return bar;
+}
+
+// Max contagion range in world units
+static constexpr float CONTAGION_RANGE = 8.0f;
+
+void processEmotionContagion(GameWorld& world) {
+    const auto& npcs = world.npcs();
+    for (size_t i = 0; i < npcs.size(); ++i) {
+        auto& source = *npcs[i];
+        if (source.type == NPCType::Enemy) continue;
+
+        auto aura = source.emotions.getEmotionalAura();
+        if (aura.type == EmotionType::Neutral || aura.intensity < 0.1f) continue;
+
+        for (size_t j = 0; j < npcs.size(); ++j) {
+            if (i == j) continue;
+            auto& receiver = *npcs[j];
+            if (receiver.type == NPCType::Enemy) continue;
+
+            float dist = source.position.distanceTo(receiver.position);
+            if (dist >= CONTAGION_RANGE) continue;
+
+            float proximity = 1.0f - (dist / CONTAGION_RANGE);
+            float empathy   = receiver.personality.empathyMultiplier();
+            receiver.emotions.applyContagion(aura.type, aura.intensity, empathy, proximity);
+        }
+    }
+}
+
+void printEmotionContagionTable(const std::string& timeStr, GameWorld& world) {
+    const auto& npcs = world.npcs();
+
+    // Collect only village NPCs
+    std::vector<std::shared_ptr<NPC>> village;
+    for (const auto& npc : npcs) {
+        if (npc->type != NPCType::Enemy) village.push_back(npc);
+    }
+    if (village.empty()) return;
+
+    std::cout << "\n  \033[1;37m┌─────────────────────────────────────────────────────────────────┐\033[0m\n";
+    std::cout <<   "  \033[1;37m│  EMOTION CONTAGION MAP  ──  " << timeStr
+              << std::string(37 - timeStr.size(), ' ') << "│\033[0m\n";
+    std::cout <<   "  \033[1;37m├──────────────┬────────────┬───────┬────────────────────────────┤\033[0m\n";
+    std::cout <<   "  \033[1;37m│ NPC          │ Emotion    │ Intens│ Spreading to...            │\033[0m\n";
+    std::cout <<   "  \033[1;37m├──────────────┼────────────┼───────┼────────────────────────────┤\033[0m\n";
+
+    for (const auto& npc : village) {
+        auto aura = npc->emotions.getEmotionalAura();
+        std::string emotionStr = emotionToString(aura.type);
+
+        // Pad name and emotion to fixed widths
+        std::string nameCol = npc->name;
+        nameCol.resize(12, ' ');
+        std::string emotCol = emotionStr;
+        emotCol.resize(10, ' ');
+
+        std::string bar = intensityBar(aura.intensity);
+
+        // Find nearby NPCs this NPC is infecting
+        std::string targets;
+        for (const auto& other : village) {
+            if (other->id == npc->id) continue;
+            float dist = npc->position.distanceTo(other->position);
+            if (dist < CONTAGION_RANGE && aura.type != EmotionType::Neutral && aura.intensity >= 0.1f) {
+                float prox = 1.0f - (dist / CONTAGION_RANGE);
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%s(%.1f) ", other->name.c_str(), prox);
+                targets += buf;
+            }
+        }
+        if (targets.empty()) targets = "—";
+        if (targets.size() > 26) targets = targets.substr(0, 23) + "...";
+        targets.resize(26, ' ');
+
+        std::cout << "  \033[1;37m│\033[0m "
+                  << emotionColor(aura.type) << nameCol << RESET
+                  << " \033[1;37m│\033[0m "
+                  << emotionColor(aura.type) << emotCol << RESET
+                  << " \033[1;37m│\033[0m "
+                  << emotionColor(aura.type) << bar << RESET
+                  << " \033[1;37m│\033[0m "
+                  << targets
+                  << "\033[1;37m│\033[0m\n";
+    }
+
+    std::cout << "  \033[1;37m└──────────────┴────────────┴───────┴────────────────────────────┘\033[0m\n\n";
 }
 
 // =======================================================================
