@@ -1,0 +1,44 @@
+name: Build WASM + Deploy to GitHub Pages
+
+on:
+  push:
+    branches: ["claude/**", main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed by peaceiris/actions-gh-pages
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64   # latest stable as of 2025
+
+      - name: Verify emcc
+        run: emcc --version
+
+      - name: Configure with Emscripten
+        run: emcmake cmake -B build-wasm -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build npc_wasm
+        run: cmake --build build-wasm --target npc_wasm --parallel
+
+      - name: Assemble web directory
+        run: |
+          mkdir -p dist
+          cp web/index.html          dist/
+          cp build-wasm/npc_wasm.js  dist/
+          cp build-wasm/npc_wasm.wasm dist/
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir:  dist
+          commit_message: "deploy: WASM build from ${{ github.sha }}"

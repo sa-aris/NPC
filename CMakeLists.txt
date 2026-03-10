@@ -45,3 +45,27 @@ target_compile_options(run_tests PRIVATE
 # CTest integration (optional: cmake --build build && ctest)
 enable_testing()
 add_test(NAME npc_tests COMMAND run_tests)
+
+# ─── WASM target (Emscripten only) ───────────────────────────────────
+# Build: emcmake cmake -B build-wasm && cmake --build build-wasm --target npc_wasm
+
+if(EMSCRIPTEN)
+    add_executable(npc_wasm src/wasm_api.cpp)
+    target_include_directories(npc_wasm PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_compile_options(npc_wasm PRIVATE -O2)
+    target_link_options(npc_wasm PRIVATE
+        "-sEXPORTED_FUNCTIONS=[_npc_init,_npc_step,_npc_is_complete,_malloc,_free]"
+        "-sEXPORTED_RUNTIME_METHODS=[UTF8ToString]"
+        "-sMODULARIZE=1"
+        "-sEXPORT_NAME=NpcModule"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sINITIAL_MEMORY=33554432"
+        "-O2"
+    )
+    set_target_properties(npc_wasm PROPERTIES
+        OUTPUT_NAME "npc_wasm"
+        SUFFIX ".js"
+    )
+endif()
