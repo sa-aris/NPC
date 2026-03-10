@@ -1,4 +1,39 @@
+# Build
 build/
+cmake-build-*/
+out/
 *.o
 *.a
+*.so
+*.dylib
+*.dll
+
+# Executables
 village_sim
+run_tests
+*.exe
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+install_manifest.txt
+CTestTestfile.cmake
+_CPack_Packages/
+
+# IDE
+.vscode/
+.idea/
+*.user
+*.suo
+*.xcodeproj/
+*.xcworkspace/
+
+# macOS
+.DS_Store
+
+# Autosave / debug
+saves/
+*.npc.json
+*.world.json
