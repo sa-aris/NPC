@@ -21,11 +21,13 @@
 #include "npc/social/faction_system.hpp"
 #include "npc/social/group_behavior.hpp"
 #include "npc/social/relationship_system.hpp"
+#include "npc/social/influence_chain.hpp"
 #include "npc/world/world_event_manager.hpp"
 #include <iostream>
 #include <iomanip>
 #include <memory>
 #include <cstdlib>
+#include <set>
 
 using namespace npc;
 
@@ -48,8 +50,9 @@ constexpr ItemId ITEM_ENCHANTED_SWORD = 11;
 constexpr ItemId ITEM_EXOTIC_SPICES   = 12;
 
 // === Global state ===
-static RelationshipSystem g_relationships;
-static GroupBehavior g_wolfPack;
+static RelationshipSystem    g_relationships;
+static GroupBehavior         g_wolfPack;
+static InfluenceChainSystem  g_influence;
 static bool g_wolfPackMoraleBroken = false;
 static bool g_combatActive = false;
 static bool g_combatResolved = false;
@@ -76,6 +79,8 @@ void logRelationship(const std::string& timeStr, const std::string& a,
 void processEmotionContagion(GameWorld& world);
 void printEmotionContagionTable(const std::string& timeStr, GameWorld& world);
 void processMemoryDecayNarrative(const std::string& timeStr, GameWorld& world);
+void processInfluenceChains(const std::string& timeStr, GameWorld& world);
+void printInfluenceChainSummary(GameWorld& world);
 
 // =======================================================================
 //  MAIN
@@ -198,6 +203,9 @@ int main() {
 
         // --- Memory decay narrative ---
         processMemoryDecayNarrative(world.time().formatClock(), world);
+
+        // --- Social influence chain propagation ---
+        processInfluenceChains(world.time().formatClock(), world);
     }
 
     // =================================================================
@@ -289,6 +297,8 @@ int main() {
         }
         std::cout << "\n";
     }
+
+    printInfluenceChainSummary(world);
 
     std::cout << "=== Final Village Map ===\n";
     world.printMap();
@@ -497,6 +507,224 @@ void processMemoryDecayNarrative(const std::string& timeStr, GameWorld& world) {
                 }
             }
         }
+    }
+}
+
+// =======================================================================
+//  SOCIAL INFLUENCE CHAINS
+// =======================================================================
+
+static constexpr float INFLUENCE_SOCIAL_RANGE = 6.0f;  // units
+static constexpr float INFLUENCE_SPREAD_CHANCE = 0.08f; // per step per pair
+
+// Per-step deduplication: don't spread the same message through the same
+// directed pair twice within one sim tick.
+static std::set<std::string> s_influencedThisStep;
+
+static std::string influenceColor(float charge) {
+    if (charge >  0.4f) return "\033[1;32m";  // bright green  — inspiring
+    if (charge >  0.0f) return "\033[0;33m";  // yellow        — mildly positive
+    if (charge > -0.4f) return "\033[0;35m";  // magenta       — unsettling
+    return                      "\033[1;31m"; // bright red    — alarming
+}
+
+static std::string reliabilityBar(float r) {
+    int f = std::max(0, std::min(5, static_cast<int>(std::round(r * 5.0f))));
+    std::string s;
+    for (int i = 0; i < f; ++i)     s += "\u2588";
+    for (int i = f; i < 5; ++i)     s += "\u2591";
+    return s;
+}
+
+void processInfluenceChains(const std::string& timeStr, GameWorld& world) {
+    s_influencedThisStep.clear();
+    const auto& npcs = world.npcs();
+
+    for (size_t i = 0; i < npcs.size(); ++i) {
+        auto& sender = *npcs[i];
+        if (sender.type == NPCType::Enemy) continue;
+        if (!sender.combat.stats.isAlive()) continue;
+
+        for (size_t j = 0; j < npcs.size(); ++j) {
+            if (i == j) continue;
+            auto& receiver = *npcs[j];
+            if (receiver.type == NPCType::Enemy) continue;
+            if (!receiver.combat.stats.isAlive()) continue;
+
+            float dist = sender.position.distanceTo(receiver.position);
+            if (dist > INFLUENCE_SOCIAL_RANGE) continue;
+
+            // Probability gate: close proximity boosts chance
+            float proximity  = 1.0f - (dist / INFLUENCE_SOCIAL_RANGE);
+            float baseChance = INFLUENCE_SPREAD_CHANCE
+                             + proximity * 0.06f
+                             + sender.personality.sociability * 0.04f;
+
+            // NPC must be in a social state (not sleeping/fleeing) to gossip
+            const StateId& st = sender.fsm.currentState();
+            if (st == "Sleep" || st == "Flee") continue;
+
+            float roll = static_cast<float>(std::rand()) / RAND_MAX;
+            if (roll > baseChance) continue;
+
+            float rel = g_relationships.getValue(
+                std::to_string(sender.id), std::to_string(receiver.id));
+            if (rel < -20.0f) continue; // hostile pairs don't share intel
+
+            // Try each active influence message
+            for (auto& msg : const_cast<std::vector<InfluenceMessage>&>(
+                                 g_influence.messages())) {
+                if (world.time().totalHours() > msg.expiresAt) continue;
+                if (!msg.hasReached(sender.id))   continue; // sender doesn't have it
+                if (msg.hasReached(receiver.id))  continue; // receiver already has it
+
+                // Dedup within this step
+                std::string pairKey = msg.id + "|" + std::to_string(sender.id)
+                                    + ">" + std::to_string(receiver.id);
+                if (s_influencedThisStep.count(pairKey)) continue;
+                s_influencedThisStep.insert(pairKey);
+
+                // ── Propagation math ──────────────────────────────────────
+                // Reliability decays per hop; intelligent receivers are skeptical
+                float newReliability = msg.reliability * 0.82f
+                    * (1.0f - receiver.personality.intelligence * 0.15f);
+                newReliability = std::max(0.0f, newReliability);
+
+                // Sender willingness: impulsive (low patience) and social NPCs
+                // spread faster; greedy NPCs hoard info
+                float willingness = 0.4f
+                    + sender.personality.sociability * 0.3f
+                    + (1.0f - sender.personality.patience) * 0.2f
+                    - sender.personality.greed * 0.15f
+                    + (rel / 200.0f); // relationship bonus
+                willingness = std::clamp(willingness, 0.05f, 0.95f);
+
+                // Acceptance: intelligent receivers demand higher reliability
+                float acceptThreshold = 0.08f
+                    + receiver.personality.intelligence * 0.35f;
+                bool accepted = (newReliability >= acceptThreshold)
+                              && (willingness >= 0.4f);
+
+                // ── Charge transformation ─────────────────────────────────
+                float empathy   = receiver.personality.empathyMultiplier();
+                float chargeOut = msg.charge * (0.65f + empathy * 0.35f);
+
+                // Distortion: very unreliable messages can get garbled
+                if (newReliability < 0.30f) {
+                    float distort = (0.30f - newReliability) / 0.30f;
+                    chargeOut *= (1.0f - distort * 1.4f);
+                }
+                chargeOut = std::clamp(chargeOut, -1.0f, 1.0f);
+
+                // ── Narrative reaction line ───────────────────────────────
+                std::string reaction;
+                if (!accepted) {
+                    reaction = receiver.name + " shrugs off what " + sender.name + " says.";
+                } else {
+                    if      (chargeOut < -0.65f) reaction = receiver.name + " goes pale with alarm.";
+                    else if (chargeOut < -0.30f) reaction = receiver.name + " looks uneasy.";
+                    else if (chargeOut < -0.05f) reaction = receiver.name + " frowns quietly.";
+                    else if (chargeOut <  0.15f) reaction = receiver.name + " nods slowly.";
+                    else if (chargeOut <  0.55f) reaction = receiver.name + " seems encouraged.";
+                    else                         reaction = receiver.name + " lights up with pride.";
+                }
+
+                // ── Apply to receiver ─────────────────────────────────────
+                if (accepted) {
+                    Memory sourceMemory;
+                    sourceMemory.type           = MemoryType::WorldEvent;
+                    sourceMemory.description    = msg.topic + " (from " + sender.name + ")";
+                    sourceMemory.emotionalImpact = chargeOut;
+                    sourceMemory.importance     = 0.3f + std::abs(chargeOut) * 0.5f;
+                    sourceMemory.timestamp      = world.time().totalHours();
+                    sourceMemory.reliability    = newReliability;
+                    sourceMemory.decayRate      = 0.01f;
+                    sourceMemory.currentStrength = 1.0f;
+                    receiver.memory.receiveGossip(sourceMemory, sender.id,
+                        std::clamp(rel, -100.0f, 100.0f),
+                        world.time().totalHours(), 1);
+
+                    EmotionType emoType = (chargeOut < -0.35f) ? EmotionType::Fearful
+                                       : (chargeOut < -0.05f) ? EmotionType::Sad
+                                       : (chargeOut >  0.45f) ? EmotionType::Happy
+                                       :                        EmotionType::Surprised;
+                    if (std::abs(chargeOut) > 0.15f)
+                        receiver.emotions.addEmotion(emoType,
+                            std::abs(chargeOut) * 0.55f, 2.0f);
+
+                    // Update the message's evolution
+                    g_influence.recordHop(msg.id, receiver.id, receiver.name,
+                                          newReliability, chargeOut);
+                }
+
+                // ── Print hop ─────────────────────────────────────────────
+                const char* col = influenceColor(msg.charge).c_str();
+                // rebuild col properly:
+                std::string colStr = influenceColor(msg.charge);
+                std::cout << "[" << timeStr << "] "
+                          << "\033[1;36m" << "\u27f6 INFLUENCE"
+                          << "\033[0m"
+                          << " \033[0;90m[" << msg.id << "]\033[0m"
+                          << " \"" << colStr << msg.topic << "\033[0m\"\n"
+                          << "         "
+                          << "\033[1;37m" << sender.name << "\033[0m"
+                          << colStr << " \u2500\u2500[rel:"
+                          << static_cast<int>(rel)
+                          << " hop:" << (msg.hopCount + 1)
+                          << "]\u2500\u2500\u25b6 " << "\033[0m"
+                          << "\033[1;37m" << receiver.name << "\033[0m"
+                          << "  rel:" << reliabilityBar(newReliability)
+                          << "(" << std::fixed << std::setprecision(2)
+                          << newReliability << ")"
+                          << "  charge:" << (chargeOut >= 0 ? "+" : "")
+                          << std::setprecision(2) << chargeOut
+                          << (accepted ? "" : "  \033[0;90m[rejected]\033[0m")
+                          << "\n"
+                          << "         \u2514 " << reaction << "\n";
+
+                // Show current chain
+                if (accepted) {
+                    std::cout << "         \033[0;90m"
+                              << "Chain: " << msg.chainString()
+                              << "\033[0m\n";
+                }
+                std::cout << "\n";
+            }
+        }
+    }
+}
+
+void printInfluenceChainSummary(GameWorld& world) {
+    const auto& msgs = g_influence.messages();
+    if (msgs.empty()) return;
+
+    std::cout << "\n\033[1;36m"
+              << "========================================\n"
+              << "  SOCIAL INFLUENCE CHAIN SUMMARY\n"
+              << "========================================\033[0m\n\n";
+
+    for (const auto& msg : msgs) {
+        std::string colStr = influenceColor(msg.charge);
+        int reached = static_cast<int>(msg.reachedIds.size());
+        int total   = static_cast<int>(world.npcs().size());
+        // exclude enemies from total
+        int villagers = 0;
+        for (const auto& n : world.npcs())
+            if (n->type != NPCType::Enemy) ++villagers;
+
+        std::cout << "  " << colStr << "\u25cf " << msg.topic << "\033[0m\n";
+        std::cout << "    Seeded by : " << msg.originatorName << "\n";
+        std::cout << "    Reached   : " << reached << " / " << villagers
+                  << " villagers  (" << msg.hopCount << " hops)\n";
+        std::cout << "    Reliability at last hop: "
+                  << reliabilityBar(msg.reliability)
+                  << " " << std::fixed << std::setprecision(2) << msg.reliability << "\n";
+        std::cout << "    Charge drift: "
+                  << influenceColor(msg.charge)
+                  << (msg.charge >= 0 ? "+" : "") << msg.charge
+                  << "\033[0m\n";
+        std::cout << "    Propagation chain:\n      "
+                  << "\033[1;37m" << msg.chainString() << "\033[0m\n\n";
     }
 }
 
@@ -2026,6 +2254,23 @@ void scheduleWorldEvents(GameWorld& world, FactionSystem& factions,
     // === 07:00 - Everyone goes to work ===
     world.eventManager().scheduleEvent(7.0f, "work_start", [](GameWorld& w) {
         std::cout << "\n  ** The village comes alive. Everyone heads to work. **\n";
+
+        // Seed influence: Alaric noticed unusual tracks during dawn patrol
+        auto* alaric = w.findNPC("Alaric");
+        if (alaric) {
+            InfluenceMessage msg;
+            msg.id            = "strange_tracks";
+            msg.topic         = "strange tracks near the forest at dawn";
+            msg.originatorId  = alaric->id;
+            msg.originatorName = "Alaric";
+            msg.charge        = -0.45f;  // somewhat unsettling
+            msg.reliability   = 1.0f;
+            msg.createdAt     = w.time().totalHours();
+            msg.expiresAt     = 22.0f;
+            msg.reachedIds.push_back(alaric->id);
+            msg.reachedNames.push_back(alaric->name);
+            g_influence.seed(std::move(msg));
+        }
     });
 
     // === 08:00 - Traveling merchant arrives ===
@@ -2282,6 +2527,23 @@ void scheduleWorldEvents(GameWorld& world, FactionSystem& factions,
             Vec2(35.0f, 12.0f), 0.8f
         });
 
+        // Seed influence: wolf attack spreading panic through village
+        auto* alaricSeed = w.findNPC("Alaric");
+        if (alaricSeed) {
+            InfluenceMessage msg;
+            msg.id            = "wolves_attack";
+            msg.topic         = "wolves are attacking the village";
+            msg.originatorId  = alaricSeed->id;
+            msg.originatorName = "Alaric";
+            msg.charge        = -0.85f;  // very alarming
+            msg.reliability   = 1.0f;
+            msg.createdAt     = w.time().totalHours();
+            msg.expiresAt     = 22.0f;
+            msg.reachedIds.push_back(alaricSeed->id);
+            msg.reachedNames.push_back(alaricSeed->name);
+            g_influence.seed(std::move(msg));
+        }
+
         // Spawn wolves with GroupBehavior
         g_wolfPack.setLeader(100);
         g_wolfPack.setFormation(FormationType::Wedge);
@@ -2418,6 +2680,23 @@ void scheduleWorldEvents(GameWorld& world, FactionSystem& factions,
                 npc->emotions.addEmotion(EmotionType::Happy, 0.3f, 2.0f);
             }
         }
+
+        // Seed influence: Brina spreads the heroic account of Alaric's defence
+        auto* brina = w.findNPC("Brina");
+        if (brina) {
+            InfluenceMessage msg;
+            msg.id            = "alaric_hero";
+            msg.topic         = "Alaric held the gate alone against the wolves";
+            msg.originatorId  = brina->id;
+            msg.originatorName = "Brina";
+            msg.charge        = +0.75f;  // inspiring / uplifting
+            msg.reliability   = 1.0f;
+            msg.createdAt     = w.time().totalHours();
+            msg.expiresAt     = 22.0f;
+            msg.reachedIds.push_back(brina->id);
+            msg.reachedNames.push_back(brina->name);
+            g_influence.seed(std::move(msg));
+        }
     });
 
     // === 16:00 - Village meeting ===
@@ -2425,6 +2704,15 @@ void scheduleWorldEvents(GameWorld& world, FactionSystem& factions,
         std::cout << "\n  ** VILLAGE MEETING AT THE SQUARE **\n\n";
         std::cout << "[" << w.time().formatClock()
                   << "] All villagers gather at the Square to discuss the wolf attack.\n\n";
+
+        // Physically move all living villagers to the square so
+        // proximity-based systems (contagion, influence) fire correctly.
+        for (auto& npc : w.npcs()) {
+            if (npc->type != NPCType::Enemy && npc->combat.stats.isAlive()) {
+                npc->position = Vec2(20.0f + (static_cast<float>(npc->id % 3) - 1.0f),
+                                     12.0f + (static_cast<float>(npc->id % 2) * 0.8f));
+            }
+        }
 
         // Everyone gathers and talks
         auto* alaric = w.findNPC("Alaric");
