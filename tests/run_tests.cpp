@@ -14,6 +14,12 @@
 #include "npc/serialization/json.hpp"
 #include "npc/event/event_system.hpp"
 #include "npc/ai/blackboard.hpp"
+#include "npc/social/reputation_system.hpp"
+#include "npc/social/family_system.hpp"
+#include "npc/economy/economy_system.hpp"
+#include "npc/quest/quest_generator.hpp"
+#include "npc/perception/sound_perception.hpp"
+#include "npc/serialization/save_load.hpp"
 
 #include <vector>
 #include <cmath>
@@ -776,6 +782,607 @@ TEST("Integration: WorldBlackboard faction key format") {
     wb.setFactionAlert(42u, true, 0.f);
     auto view = wb.viewOf("faction/", 0.f);
     ASSERT_TRUE(view.has("42/alert"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reputation & Crime
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST("Reputation: witnessed crime damages reputation") {
+    npc::ReputationSystem rs;
+    rs.recordCrime(npc::CrimeType::Theft, "thief", "victim", 1.0, {"witness1"});
+    ASSERT_LT(rs.reputationOf("thief"), 0.0f);
+}
+
+TEST("Reputation: unwitnessed crime leaves reputation intact") {
+    npc::ReputationSystem rs;
+    rs.recordCrime(npc::CrimeType::Smuggling, "smuggler", "", 1.0);
+    ASSERT_NEAR(rs.reputationOf("smuggler"), 0.0f, 0.001f);
+    ASSERT_EQ(rs.undiscoveredCrimes().size(), std::size_t(1));
+}
+
+TEST("Reputation: victim counts as witness of theft") {
+    npc::ReputationSystem rs;
+    rs.recordCrime(npc::CrimeType::Theft, "thief", "victim", 1.0);
+    ASSERT_LT(rs.reputationOf("thief"), 0.0f);
+    ASSERT_EQ(rs.openCrimes().size(), std::size_t(1));
+}
+
+TEST("Reputation: serious witnessed crime posts a bounty") {
+    npc::ReputationSystem rs;
+    rs.recordCrime(npc::CrimeType::Murder, "killer", "poor_soul", 2.0, {"w1", "w2"});
+    ASSERT_GT(rs.totalBountyOn("killer"), 0.0f);
+    ASSERT_TRUE(rs.isOutlaw("killer"));
+    ASSERT_TRUE(rs.guardShouldIntervene("killer"));
+}
+
+TEST("Reputation: trespassing posts no bounty") {
+    npc::ReputationSystem rs;
+    rs.recordCrime(npc::CrimeType::Trespassing, "wanderer", "", 1.0, {"w1"});
+    ASSERT_NEAR(rs.totalBountyOn("wanderer"), 0.0f, 0.001f);
+}
+
+TEST("Reputation: exposing an undiscovered crime applies the damage") {
+    npc::ReputationSystem rs;
+    uint32_t id = rs.recordCrime(npc::CrimeType::Murder, "killer", "", 1.0);
+    ASSERT_NEAR(rs.reputationOf("killer"), 0.0f, 0.001f);
+    ASSERT_TRUE(rs.exposeCrime(id, "detective"));
+    ASSERT_LT(rs.reputationOf("killer"), -50.0f);
+    ASSERT_GT(rs.totalBountyOn("killer"), 0.0f);
+}
+
+TEST("Reputation: resolving a crime clears its bounty") {
+    npc::ReputationSystem rs;
+    uint32_t id = rs.recordCrime(npc::CrimeType::Assault, "brute", "victim", 1.0, {"w"});
+    float bounty = rs.totalBountyOn("brute");
+    ASSERT_GT(bounty, 0.0f);
+    float collected = rs.resolveCrime(id);
+    ASSERT_NEAR(collected, bounty, 0.001f);
+    ASSERT_NEAR(rs.totalBountyOn("brute"), 0.0f, 0.001f);
+    ASSERT_EQ(rs.openCrimes().size(), std::size_t(0));
+}
+
+TEST("Reputation: good deeds raise reputation") {
+    npc::ReputationSystem rs;
+    rs.recordDeed(npc::DeedType::SavedLife, "hero", 1.0);
+    ASSERT_GT(rs.reputationOf("hero"), 0.0f);
+    ASSERT_EQ(std::string(rs.labelOf("hero")), "Respected");
+}
+
+TEST("Reputation: decays toward neutral over time") {
+    npc::ReputationSystem rs;
+    rs.setReputation("npc", -10.0f);
+    rs.update(100.0f); // 100h * 0.01/h = 1.0 recovered
+    ASSERT_GT(rs.reputationOf("npc"), -10.0f);
+    ASSERT_LT(rs.reputationOf("npc"), 0.0f);
+}
+
+TEST("Reputation: onCrimeWitnessed hook fires per witness") {
+    npc::ReputationSystem rs;
+    int calls = 0;
+    rs.onCrimeWitnessed = [&](const std::string&, const npc::CrimeRecord&){ ++calls; };
+    rs.recordCrime(npc::CrimeType::Vandalism, "vandal", "", 1.0, {"w1", "w2", "w3"});
+    ASSERT_EQ(calls, 3);
+}
+
+TEST("Reputation: worstOffenders sorts ascending") {
+    npc::ReputationSystem rs;
+    rs.setReputation("a", -80.0f);
+    rs.setReputation("b", 20.0f);
+    rs.setReputation("c", -30.0f);
+    auto worst = rs.worstOffenders(2);
+    ASSERT_EQ(worst.size(), std::size_t(2));
+    ASSERT_EQ(worst[0].first, "a");
+    ASSERT_EQ(worst[1].first, "c");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Economy
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+npc::EconomySystem makeTestEconomy() {
+    npc::EconomySystem es;
+    es.registerItem({1, "Wheat", npc::ItemCategory::Material, 2.0f, 1.0f});
+    es.registerItem({2, "Bread", npc::ItemCategory::Food, 5.0f, 0.5f});
+    auto& v = es.addSettlement("Village", 10);
+    v.targetStock[1] = 20;
+    v.targetStock[2] = 20;
+    npc::ProductionRecipe bake;
+    bake.id = "bake"; bake.output = 2; bake.outputQty = 2;
+    bake.inputs = {{1, 1}}; bake.laborHours = 4.0f; bake.profession = "Baker";
+    es.registerRecipe(bake);
+    return es;
+}
+} // namespace
+
+TEST("Economy: production converts inputs to outputs") {
+    auto es = makeTestEconomy();
+    es.settlement("Village")->addStock(1, 10);
+    es.assignProducer("baker", "bake", "Village");
+    es.update(8.0, 8.0f); // 8h → 2 batches
+    ASSERT_EQ(es.settlement("Village")->stockOf(2), 4);
+    ASSERT_EQ(es.settlement("Village")->stockOf(1), 8);
+}
+
+TEST("Economy: production stalls without inputs") {
+    auto es = makeTestEconomy();
+    es.assignProducer("baker", "bake", "Village");
+    es.update(8.0, 8.0f); // no wheat in stock
+    ASSERT_EQ(es.settlement("Village")->stockOf(2), 0);
+    // …and resumes when inputs arrive
+    es.settlement("Village")->addStock(1, 5);
+    es.update(12.0, 4.0f);
+    ASSERT_GT(es.settlement("Village")->stockOf(2), 0);
+}
+
+TEST("Economy: population consumes and logs shortages") {
+    auto es = makeTestEconomy();
+    es.setConsumptionRate(2, 0.2f); // 10 pop * 0.2 = 2 bread/day
+    es.settlement("Village")->addStock(2, 1);
+    es.update(24.0, 24.0f); // one consumption interval, only 1 bread available
+    bool sawShortage = false;
+    for (const auto& ev : es.drainEvents())
+        if (ev.type == npc::EconomyEvent::Type::Shortage) sawShortage = true;
+    ASSERT_TRUE(sawShortage);
+    ASSERT_EQ(es.settlement("Village")->stockOf(2), 0);
+}
+
+TEST("Economy: scarcity raises the local price") {
+    auto es = makeTestEconomy();
+    es.settlement("Village")->addStock(2, 40); // glut
+    float glutPrice = es.localPrice("Village", 2);
+    es.settlement("Village")->stockpile[2] = 2; // scarcity
+    float scarcePrice = es.localPrice("Village", 2);
+    ASSERT_GT(scarcePrice, glutPrice);
+}
+
+TEST("Economy: scarceItems flags understocked goods") {
+    auto es = makeTestEconomy();
+    es.settlement("Village")->addStock(1, 30); // wheat plentiful (target 20)
+    auto scarce = es.scarceItems("Village");   // bread at 0 (target 20)
+    ASSERT_EQ(scarce.size(), std::size_t(1));
+    ASSERT_EQ(scarce[0], npc::ItemId(2));
+}
+
+TEST("Economy: caravan moves stock between settlements") {
+    auto es = makeTestEconomy();
+    es.addSettlement("Town", 10);
+    es.settlement("Village")->addStock(1, 20);
+    uint32_t id = es.sendCaravan("Village", "Town", 1, 10, 0.0);
+    ASSERT_NE(id, uint32_t(0));
+    ASSERT_EQ(es.settlement("Village")->stockOf(1), 10);
+    ASSERT_EQ(es.settlement("Town")->stockOf(1), 0);   // still on the road
+    es.update(es.config.caravanTravelHours + 0.1, 0.1f);
+    ASSERT_EQ(es.settlement("Town")->stockOf(1), 10);  // delivered
+}
+
+TEST("Economy: auto-dispatch arbitrages price gaps") {
+    auto es = makeTestEconomy();
+    auto& town = es.addSettlement("Town", 10);
+    town.targetStock[1] = 20;                    // Town wants wheat, has none
+    es.settlement("Village")->addStock(1, 60);   // Village drowns in wheat
+    es.update(1.0, 1.0f);
+    ASSERT_GT(es.caravansInTransit().size(), std::size_t(0));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Quest Generator
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST("QuestGen: unsolved bounty crime spawns a bounty quest") {
+    npc::ReputationSystem rep;
+    rep.recordCrime(npc::CrimeType::Murder, "bandit", "farmer", 1.0, {"w"});
+    npc::QuestGenerator gen;
+    gen.reputation = &rep;
+    auto batch = gen.generate(2.0);
+    ASSERT_EQ(batch.size(), std::size_t(1));
+    ASSERT_TRUE(batch[0].kind == npc::GeneratedQuestKind::Bounty);
+    ASSERT_GT(batch[0].quest.reward.gold, 0.0f);
+    ASSERT_EQ(batch[0].quest.objectives[0].enemyTag, "bandit");
+}
+
+TEST("QuestGen: shortage spawns a supply run") {
+    auto es = makeTestEconomy(); // bread & wheat both scarce at stock 0
+    npc::QuestGenerator gen;
+    gen.economy = &es;
+    auto batch = gen.generate(1.0);
+    ASSERT_GT(batch.size(), std::size_t(0));
+    ASSERT_TRUE(batch[0].kind == npc::GeneratedQuestKind::SupplyRun);
+    ASSERT_GT(batch[0].quest.objectives[0].required, 0);
+}
+
+TEST("QuestGen: mutual feud spawns one mediation quest") {
+    npc::RelationshipSystem rel;
+    rel.setValue("ada", "bern", -70.0f);
+    rel.setValue("bern", "ada", -65.0f);
+    npc::QuestGenerator gen;
+    gen.relationships = &rel;
+    auto batch = gen.generate(1.0);
+    ASSERT_EQ(batch.size(), std::size_t(1));
+    ASSERT_TRUE(batch[0].kind == npc::GeneratedQuestKind::Mediation);
+    ASSERT_EQ(batch[0].quest.objectives.size(), std::size_t(2));
+}
+
+TEST("QuestGen: one-sided grudge is not a feud") {
+    npc::RelationshipSystem rel;
+    rel.setValue("ada", "bern", -70.0f);
+    rel.setValue("bern", "ada", 10.0f);
+    npc::QuestGenerator gen;
+    gen.relationships = &rel;
+    ASSERT_EQ(gen.generate(1.0).size(), std::size_t(0));
+}
+
+TEST("QuestGen: close friendship spawns a gift delivery") {
+    npc::RelationshipSystem rel;
+    rel.setValue("ada", "bern", 80.0f);
+    rel.setValue("bern", "ada", 75.0f);
+    npc::QuestGenerator gen;
+    gen.relationships = &rel;
+    auto batch = gen.generate(1.0);
+    ASSERT_EQ(batch.size(), std::size_t(1));
+    ASSERT_TRUE(batch[0].kind == npc::GeneratedQuestKind::GiftDelivery);
+}
+
+TEST("QuestGen: same situation never generates twice") {
+    npc::ReputationSystem rep;
+    rep.recordCrime(npc::CrimeType::Murder, "bandit", "farmer", 1.0, {"w"});
+    npc::QuestGenerator gen;
+    gen.reputation = &rep;
+    ASSERT_EQ(gen.generate(1.0).size(), std::size_t(1));
+    ASSERT_EQ(gen.generate(2.0).size(), std::size_t(0)); // deduped
+    gen.releaseContext("bounty:1");
+    ASSERT_EQ(gen.generate(3.0).size(), std::size_t(1)); // re-armed
+}
+
+TEST("QuestGen: caravan in transit spawns an escort quest") {
+    auto es = makeTestEconomy();
+    es.addSettlement("Town", 10);
+    es.settlement("Village")->addStock(1, 20);
+    es.sendCaravan("Village", "Town", 1, 10, 0.0);
+    npc::QuestGenerator gen;
+    gen.economy = &es;
+    bool sawEscort = false;
+    for (auto& g : gen.generate(0.5))
+        if (g.kind == npc::GeneratedQuestKind::CaravanEscort) sawEscort = true;
+    ASSERT_TRUE(sawEscort);
+}
+
+TEST("QuestGen: generateInto registers quests as Available") {
+    npc::ReputationSystem rep;
+    rep.recordCrime(npc::CrimeType::Assault, "brute", "victim", 1.0, {"w"});
+    npc::QuestGenerator gen;
+    gen.reputation = &rep;
+    npc::QuestManager qm;
+    auto batch = gen.generateInto(qm, 1.0);
+    ASSERT_EQ(batch.size(), std::size_t(1));
+    const auto* q = qm.getQuest(batch[0].quest.id);
+    ASSERT_TRUE(q != nullptr);
+    ASSERT_TRUE(q->status == npc::QuestStatus::Available);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sound Perception
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST("Sound: nearby scream is heard loudly") {
+    npc::SoundscapeSystem ss;
+    ss.emit(npc::NoiseType::Scream, {10, 10}, 1.0);
+    auto heard = ss.listen({12, 10}, 1.0);
+    ASSERT_EQ(heard.size(), std::size_t(1));
+    ASSERT_GT(heard[0].intensity, 0.5f);
+    ASSERT_TRUE(heard[0].worthInvestigating());
+}
+
+TEST("Sound: footsteps are inaudible from afar") {
+    npc::SoundscapeSystem ss;
+    ss.emit(npc::NoiseType::Footstep, {10, 10}, 1.0);
+    ASSERT_EQ(ss.listen({30, 10}, 1.0).size(), std::size_t(0));
+}
+
+TEST("Sound: walls dampen noise") {
+    npc::SoundscapeSystem ss;
+    ss.emit(npc::NoiseType::Shout, {10, 10}, 1.0);
+    float open = ss.listen({15, 10}, 1.0)[0].intensity;
+    ss.wallCounter = [](npc::Vec2, npc::Vec2){ return 2; };
+    auto muffled = ss.listen({15, 10}, 1.0);
+    ASSERT_TRUE(muffled.empty() || muffled[0].intensity < open);
+}
+
+TEST("Sound: emitter does not hear itself") {
+    npc::SoundscapeSystem ss;
+    ss.emit(npc::NoiseType::Shout, {10, 10}, 1.0, npc::EntityId(7));
+    ASSERT_EQ(ss.listen({10, 10}, 1.0, 1.0f, npc::EntityId(7)).size(), std::size_t(0));
+    ASSERT_EQ(ss.listen({10, 10}, 1.0, 1.0f, npc::EntityId(8)).size(), std::size_t(1));
+}
+
+TEST("Sound: mostUrgent respects the threshold") {
+    npc::SoundscapeSystem ss;
+    ss.emit(npc::NoiseType::Music, {10, 10}, 1.0);
+    ASSERT_FALSE(ss.mostUrgent({11, 10}, 1.0, 0.3f).has_value());
+    ss.emit(npc::NoiseType::CombatClash, {10, 10}, 1.0);
+    auto urgent = ss.mostUrgent({11, 10}, 1.0, 0.3f);
+    ASSERT_TRUE(urgent.has_value());
+    ASSERT_TRUE(urgent->type == npc::NoiseType::CombatClash);
+}
+
+TEST("Sound: faint sounds are localized poorly") {
+    npc::SoundscapeSystem ss;
+    ss.emit(npc::NoiseType::Scream, {10, 10}, 1.0);
+    auto near_ = ss.listen({11, 10}, 1.0)[0];
+    auto far_  = ss.listen({24, 10}, 1.0)[0];
+    float nearErr = near_.position.distanceTo(near_.perceivedPosition);
+    float farErr  = far_.position.distanceTo(far_.perceivedPosition);
+    ASSERT_LT(nearErr, farErr);
+}
+
+TEST("Sound: events expire after their lifetime") {
+    npc::SoundscapeSystem ss;
+    ss.emit(npc::NoiseType::Explosion, {10, 10}, 1.0);
+    ss.update(1.0 + ss.config.eventLifetime + 0.01);
+    ASSERT_EQ(ss.eventCount(), std::size_t(0));
+}
+
+TEST("Sound: bridges into PerceptionSystem SensoryInput") {
+    npc::SoundscapeSystem ss;
+    ss.emit(npc::NoiseType::CombatClash, {10, 10}, 1.0, npc::EntityId(3));
+    auto heard = ss.listen({12, 10}, 1.0);
+    auto input = npc::SoundscapeSystem::toSensoryInput(heard[0], true);
+    ASSERT_EQ(input.entityId, npc::EntityId(3));
+    ASSERT_TRUE(input.isHostile);
+    ASSERT_GT(input.noiseLevel, 0.0f);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Family & Lifecycle
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST("Family: marriage merges households") {
+    npc::FamilySystem fs;
+    fs.registerNPC("ada", 25.0f);
+    fs.registerNPC("bern", 27.0f);
+    ASSERT_TRUE(fs.marry("ada", "bern", 1.0));
+    ASSERT_EQ(fs.householdOf("ada")->id, fs.householdOf("bern")->id);
+    ASSERT_EQ(fs.tryGet("ada")->spouse, "bern");
+}
+
+TEST("Family: children cannot marry") {
+    npc::FamilySystem fs;
+    fs.registerNPC("kid", 10.0f);
+    fs.registerNPC("adult", 30.0f);
+    ASSERT_FALSE(fs.canMarry("kid", "adult"));
+}
+
+TEST("Family: low relationship blocks marriage when wired") {
+    npc::RelationshipSystem rel;
+    npc::FamilySystem fs;
+    fs.relationships = &rel;
+    fs.registerNPC("ada", 25.0f);
+    fs.registerNPC("bern", 27.0f);
+    ASSERT_FALSE(fs.canMarry("ada", "bern")); // default rel value 0 < 50
+    rel.setValue("ada", "bern", 60.0f);
+    rel.setValue("bern", "ada", 60.0f);
+    ASSERT_TRUE(fs.canMarry("ada", "bern"));
+}
+
+TEST("Family: children join the parents' household") {
+    npc::FamilySystem fs;
+    fs.registerNPC("ada", 25.0f);
+    fs.registerNPC("bern", 27.0f);
+    fs.marry("ada", "bern", 1.0);
+    std::string child = fs.haveChild("ada", "bern", 2.0);
+    ASSERT_FALSE(child.empty());
+    ASSERT_EQ(fs.householdOf(child)->id, fs.householdOf("ada")->id);
+    ASSERT_TRUE(fs.lifeStageOf(child) == npc::LifeStage::Child);
+}
+
+TEST("Family: siblings cannot marry") {
+    npc::FamilySystem fs;
+    fs.registerNPC("ada", 25.0f);
+    fs.registerNPC("bern", 27.0f);
+    fs.marry("ada", "bern", 1.0);
+    std::string c1 = fs.haveChild("ada", "bern", 2.0);
+    std::string c2 = fs.haveChild("ada", "bern", 3.0);
+    if (auto* m1 = fs.tryGetMutable(c1)) m1->age = 25.0f;
+    if (auto* m2 = fs.tryGetMutable(c2)) m2->age = 25.0f;
+    ASSERT_FALSE(fs.canMarry(c1, c2));
+}
+
+TEST("Family: aging crosses life stages and emits events") {
+    npc::FamilySystem fs;
+    fs.config.hoursPerYear = 1.0f; // 1 hour = 1 year for the test
+    fs.registerNPC("teen", 17.5f);
+    fs.update(1.0, 1.0f); // ages to 18.5 → Adult
+    ASSERT_TRUE(fs.lifeStageOf("teen") == npc::LifeStage::Adult);
+    bool cameOfAge = false;
+    for (const auto& ev : fs.drainEvents())
+        if (ev.type == npc::LifecycleEvent::Type::CameOfAge) cameOfAge = true;
+    ASSERT_TRUE(cameOfAge);
+}
+
+TEST("Family: death splits estate between spouse and children") {
+    npc::FamilySystem fs;
+    fs.registerNPC("ada", 70.0f, 100.0f);
+    fs.registerNPC("bern", 68.0f);
+    fs.marry("ada", "bern", 1.0);
+    std::string child = fs.haveChild("ada", "bern", 2.0);
+    fs.kill("ada", 10.0);
+    ASSERT_FALSE(fs.isAlive("ada"));
+    ASSERT_NEAR(fs.tryGet("bern")->personalWealth, 50.0f, 0.001f);
+    ASSERT_NEAR(fs.tryGet(child)->personalWealth, 50.0f, 0.001f);
+    ASSERT_TRUE(fs.tryGet("bern")->spouse.empty()); // widowed
+}
+
+TEST("Family: heirs are spouse first, then children oldest-first") {
+    npc::FamilySystem fs;
+    fs.registerNPC("ada", 60.0f);
+    fs.registerNPC("bern", 58.0f);
+    fs.marry("ada", "bern", 1.0);
+    std::string c1 = fs.haveChild("ada", "bern", 2.0);
+    std::string c2 = fs.haveChild("ada", "bern", 3.0);
+    if (auto* m = fs.tryGetMutable(c1)) m->age = 30.0f;
+    if (auto* m = fs.tryGetMutable(c2)) m->age = 20.0f;
+    auto heirs = fs.heirsOf("ada");
+    ASSERT_EQ(heirs.size(), std::size_t(3));
+    ASSERT_EQ(heirs[0], "bern");
+    ASSERT_EQ(heirs[1], c1);
+    ASSERT_EQ(heirs[2], c2);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// World Save / Load
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST("SaveLoad: relationships roundtrip with history") {
+    npc::RelationshipSystem a;
+    a.recordEvent("ada", "bern", npc::RelationshipEventType::Saved, 5.0);
+    a.setTrust("ada", "bern", 88.0f);
+
+    npc::RelationshipSystem b;
+    npc::WorldSerializer::fromJson(b, npc::WorldSerializer::toJson(a));
+    ASSERT_NEAR(b.getValue("ada", "bern"), a.getValue("ada", "bern"), 0.001f);
+    ASSERT_NEAR(b.getTrust("ada", "bern"), 88.0f, 0.001f);
+    ASSERT_TRUE(b.remembers("bern", "ada", npc::RelationshipEventType::Saved));
+}
+
+TEST("SaveLoad: reputation and crimes roundtrip") {
+    npc::ReputationSystem a;
+    a.recordCrime(npc::CrimeType::Murder, "killer", "victim", 3.0, {"w1", "w2"});
+    a.recordDeed(npc::DeedType::SavedLife, "hero", 4.0);
+
+    npc::ReputationSystem b;
+    npc::WorldSerializer::fromJson(b, npc::WorldSerializer::toJson(a));
+    ASSERT_NEAR(b.reputationOf("killer"), a.reputationOf("killer"), 0.001f);
+    ASSERT_NEAR(b.totalBountyOn("killer"), a.totalBountyOn("killer"), 0.001f);
+    ASSERT_EQ(b.openCrimes().size(), std::size_t(1));
+    ASSERT_EQ(b.openCrimes()[0]->witnesses.size(), std::size_t(2));
+}
+
+TEST("SaveLoad: economy dynamic state roundtrips") {
+    auto a = makeTestEconomy();
+    a.settlement("Village")->addStock(1, 15);
+    a.addSettlement("Town", 8);
+    a.assignProducer("baker", "bake", "Village");
+    a.sendCaravan("Village", "Town", 1, 5, 2.0);
+
+    npc::EconomySystem b;
+    b.registerItem({1, "Wheat", npc::ItemCategory::Material, 2.0f, 1.0f});
+    b.registerItem({2, "Bread", npc::ItemCategory::Food, 5.0f, 0.5f});
+    npc::ProductionRecipe bake;
+    bake.id = "bake"; bake.output = 2; bake.outputQty = 2;
+    bake.inputs = {{1, 1}}; bake.laborHours = 4.0f;
+    b.registerRecipe(bake);
+
+    npc::WorldSerializer::fromJson(b, npc::WorldSerializer::toJson(a));
+    ASSERT_EQ(b.settlement("Village")->stockOf(1), 10); // 15 - 5 on caravan
+    ASSERT_EQ(b.producers().size(), std::size_t(1));
+    ASSERT_EQ(b.caravansInTransit().size(), std::size_t(1));
+    // The restored caravan still delivers
+    b.update(b.config.caravanTravelHours + 2.1, 0.1f);
+    ASSERT_EQ(b.settlement("Town")->stockOf(1), 5);
+}
+
+TEST("SaveLoad: families roundtrip with households") {
+    npc::FamilySystem a;
+    a.registerNPC("ada", 30.0f, 50.0f);
+    a.registerNPC("bern", 31.0f);
+    a.marry("ada", "bern", 1.0);
+    a.haveChild("ada", "bern", 2.0);
+
+    npc::FamilySystem b;
+    npc::WorldSerializer::fromJson(b, npc::WorldSerializer::toJson(a));
+    ASSERT_EQ(b.tryGet("ada")->spouse, "bern");
+    ASSERT_EQ(b.householdOf("ada")->id, b.householdOf("bern")->id);
+    ASSERT_EQ(b.tryGet("ada")->children.size(), std::size_t(1));
+    ASSERT_NEAR(b.tryGet("ada")->personalWealth, 50.0f, 0.001f);
+}
+
+TEST("SaveLoad: WorldSaveGame bundles systems into one file") {
+    npc::RelationshipSystem rel;
+    rel.setValue("ada", "bern", 42.0f);
+    npc::ReputationSystem rep;
+    rep.setReputation("ada", 33.0f);
+
+    npc::WorldSaveGame sg;
+    sg.relationships = &rel;
+    sg.reputation    = &rep;
+    int customLoaded = 0;
+    sg.addSection("weather",
+        [](){ npc::serial::JsonObject o; o["raining"] = true; return npc::serial::JsonValue(o); },
+        [&](const npc::serial::JsonValue& v){ if (v["raining"].asBool()) ++customLoaded; });
+
+    const std::string path = "aithena_test_save.json";
+    ASSERT_TRUE(sg.save(path, 77.5));
+
+    npc::RelationshipSystem rel2;
+    npc::ReputationSystem rep2;
+    npc::WorldSaveGame sg2;
+    sg2.relationships = &rel2;
+    sg2.reputation    = &rep2;
+    sg2.addSection("weather",
+        [](){ return npc::serial::JsonValue(); },
+        [&](const npc::serial::JsonValue& v){ if (v["raining"].asBool()) ++customLoaded; });
+
+    auto simTime = sg2.load(path);
+    std::remove(path.c_str());
+    ASSERT_TRUE(simTime.has_value());
+    ASSERT_NEAR(*simTime, 77.5, 0.001);
+    ASSERT_NEAR(rel2.getValue("ada", "bern"), 42.0f, 0.001f);
+    ASSERT_NEAR(rep2.reputationOf("ada"), 33.0f, 0.001f);
+    ASSERT_EQ(customLoaded, 1);
+}
+
+TEST("SaveLoad: rejects an incompatible format version") {
+    npc::WorldSaveGame sg;
+    const std::string path = "aithena_test_badsave.json";
+    npc::serial::JsonObject bad;
+    bad["format"] = int64_t(999);
+    npc::serial::saveFile(npc::serial::JsonValue(bad), path);
+    auto res = sg.load(path);
+    std::remove(path.c_str());
+    ASSERT_FALSE(res.has_value());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cross-system integration
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST("Integration: crime → bounty quest → resolution loop") {
+    npc::ReputationSystem rep;
+    uint32_t crimeId = rep.recordCrime(npc::CrimeType::Assault, "brute", "victim",
+                                       1.0, {"witness"});
+    npc::QuestGenerator gen;
+    gen.reputation = &rep;
+    auto batch = gen.generate(2.0);
+    ASSERT_EQ(batch.size(), std::size_t(1));
+
+    // Bounty collected → crime resolved → no new quest for it
+    rep.resolveCrime(crimeId);
+    gen.releaseContext(batch[0].contextKey);
+    ASSERT_EQ(gen.generate(3.0).size(), std::size_t(0));
+}
+
+TEST("Integration: sound event escalates guard awareness") {
+    npc::SoundscapeSystem ss;
+    npc::PerceptionSystem ps;
+    ss.emit(npc::NoiseType::Scream, {12, 10}, 1.0, npc::EntityId(9));
+    auto heard = ss.listen({10, 10}, 1.0);
+    ASSERT_EQ(heard.size(), std::size_t(1));
+    std::vector<npc::SensoryInput> inputs{
+        npc::SoundscapeSystem::toSensoryInput(heard[0], true)};
+    ps.update({10, 10}, {1, 0}, inputs, 1.0f, 0.1f);
+    ASSERT_TRUE(ps.hasPerceivedEntity(npc::EntityId(9)));
+}
+
+TEST("Integration: family death feeds the reputation system") {
+    npc::FamilySystem fs;
+    npc::ReputationSystem rep;
+    fs.registerNPC("victim", 30.0f);
+    fs.registerNPC("killer", 35.0f);
+    fs.kill("victim", 5.0);
+    rep.recordCrime(npc::CrimeType::Murder, "killer", "victim", 5.0, {"witness"});
+    ASSERT_FALSE(fs.isAlive("victim"));
+    ASSERT_TRUE(rep.isOutlaw("killer"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

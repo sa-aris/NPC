@@ -23,6 +23,12 @@
 #include "npc/social/relationship_system.hpp"
 #include "npc/social/influence_chain.hpp"
 #include "npc/world/world_event_manager.hpp"
+#include "npc/social/reputation_system.hpp"
+#include "npc/social/family_system.hpp"
+#include "npc/economy/economy_system.hpp"
+#include "npc/quest/quest_generator.hpp"
+#include "npc/perception/sound_perception.hpp"
+#include "npc/serialization/save_load.hpp"
 #include <iostream>
 #include <iomanip>
 #include <memory>
@@ -57,6 +63,14 @@ static bool g_wolfPackMoraleBroken = false;
 static bool g_combatActive = false;
 static bool g_combatResolved = false;
 
+// === Living-world systems (v1.1) ===
+static ReputationSystem g_reputation;
+static EconomySystem    g_economy;
+static FamilySystem     g_families;
+static SoundscapeSystem g_soundscape;
+static QuestGenerator   g_questGen;
+static QuestManager     g_questBoard;
+
 // === Forward declarations ===
 void buildVillageMap(GameWorld& world);
 void setupFactions(FactionSystem& factions);
@@ -81,6 +95,9 @@ void printEmotionContagionTable(const std::string& timeStr, GameWorld& world);
 void processMemoryDecayNarrative(const std::string& timeStr, GameWorld& world);
 void processInfluenceChains(const std::string& timeStr, GameWorld& world);
 void printInfluenceChainSummary(GameWorld& world);
+void setupLivingWorld(GameWorld& world);
+void runLivingWorld(GameWorld& world, float simTime, float dt);
+void printLivingWorldSummary(GameWorld& world, float simTime);
 
 // =======================================================================
 //  MAIN
@@ -162,6 +179,9 @@ int main() {
     // --- Schedule world events ---
     scheduleWorldEvents(world, factions, pathfinder);
 
+    // --- Living-world systems: economy, families, reputation, quests ---
+    setupLivingWorld(world);
+
     // === Print map ===
     std::cout << "=== Village Map ===\n";
     world.printMap();
@@ -206,6 +226,9 @@ int main() {
 
         // --- Social influence chain propagation ---
         processInfluenceChains(world.time().formatClock(), world);
+
+        // --- Living-world systems (economy, sound, crime, quests) ---
+        runLivingWorld(world, simTime, dt);
     }
 
     // =================================================================
@@ -300,9 +323,11 @@ int main() {
 
     printInfluenceChainSummary(world);
 
+    printLivingWorldSummary(world, 16.0f);
+
     std::cout << "=== Final Village Map ===\n";
     world.printMap();
-    std::cout << "\n  Phase 2 Simulation complete.\n";
+    std::cout << "\n  Simulation complete.\n";
 
     return 0;
 }
@@ -2925,4 +2950,306 @@ void scheduleWorldEvents(GameWorld& world, FactionSystem& factions,
             }
         }
     });
+}
+
+// =======================================================================
+//  LIVING-WORLD SYSTEMS (v1.1)
+//  Economy, families, reputation & crime, soundscape, procedural quests
+// =======================================================================
+
+void setupLivingWorld(GameWorld& world) {
+    // --- Economy: Greenhollow (this village) + Millbrook (neighbor) ---
+    g_economy.registerItem({ITEM_WHEAT,     "Wheat",     ItemCategory::Material, 2.0f,  1.0f});
+    g_economy.registerItem({ITEM_BREAD,     "Bread",     ItemCategory::Food,     5.0f,  0.5f});
+    g_economy.registerItem({ITEM_ALE,       "Ale",       ItemCategory::Food,     4.0f,  1.0f});
+    g_economy.registerItem({ITEM_IRON_ORE,  "Iron Ore",  ItemCategory::Material, 8.0f,  3.0f});
+    g_economy.registerItem({ITEM_HORSESHOE, "Horseshoe", ItemCategory::Tool,     15.0f, 2.0f});
+
+    auto& greenhollow = g_economy.addSettlement("Greenhollow", 5);
+    greenhollow.stockpile[ITEM_WHEAT]    = 6;
+    greenhollow.stockpile[ITEM_BREAD]    = 4;
+    greenhollow.stockpile[ITEM_IRON_ORE] = 12;
+    greenhollow.targetStock[ITEM_WHEAT]  = 10;
+    greenhollow.targetStock[ITEM_BREAD]  = 8;
+    greenhollow.targetStock[ITEM_ALE]    = 6;
+
+    auto& millbrook = g_economy.addSettlement("Millbrook", 8);
+    millbrook.targetStock[ITEM_WHEAT] = 16;   // hungry mill town, no wheat
+
+    ProductionRecipe farmWheat;
+    farmWheat.id = "farm_wheat"; farmWheat.output = ITEM_WHEAT;
+    farmWheat.outputQty = 3; farmWheat.laborHours = 2.0f;
+    farmWheat.profession = "Farmer";
+    g_economy.registerRecipe(farmWheat);
+
+    ProductionRecipe bakeBread;
+    bakeBread.id = "bake_bread"; bakeBread.output = ITEM_BREAD;
+    bakeBread.outputQty = 2; bakeBread.inputs = {{ITEM_WHEAT, 1}};
+    bakeBread.laborHours = 3.0f; bakeBread.profession = "Innkeeper";
+    g_economy.registerRecipe(bakeBread);
+
+    ProductionRecipe forgeShoe;
+    forgeShoe.id = "forge_horseshoe"; forgeShoe.output = ITEM_HORSESHOE;
+    forgeShoe.outputQty = 1; forgeShoe.inputs = {{ITEM_IRON_ORE, 2}};
+    forgeShoe.laborHours = 4.0f; forgeShoe.profession = "Blacksmith";
+    g_economy.registerRecipe(forgeShoe);
+
+    g_economy.setConsumptionRate(ITEM_BREAD, 0.4f); // per capita per day
+
+    g_economy.assignProducer("Dagna",  "farm_wheat",      "Greenhollow", 1.2f);
+    g_economy.assignProducer("Elmund", "bake_bread",      "Greenhollow", 1.0f);
+    g_economy.assignProducer("Brina",  "forge_horseshoe", "Greenhollow", 1.1f);
+
+    // --- Families: everyone gets a household; ages & savings ---
+    g_families.registerNPC("Alaric", 34.0f, 80.0f);
+    g_families.registerNPC("Brina",  41.0f, 150.0f);
+    g_families.registerNPC("Cedric", 29.0f, 220.0f);
+    g_families.registerNPC("Dagna",  25.0f, 40.0f);
+    g_families.registerNPC("Elmund", 58.0f, 310.0f);
+    g_families.drainEvents(); // registration is silent
+
+    // --- Reputation: crimes witnessed become memories + gossip seeds ---
+    g_reputation.onCrimeWitnessed = [&world](const std::string& witness,
+                                             const CrimeRecord& crime) {
+        if (NPC* w = world.findNPC(witness)) {
+            w->memory.addMemory(MemoryType::WorldEvent,
+                                witness + " saw " + crime.perpetrator + " commit " +
+                                std::string(crimeTypeName(crime.type)),
+                                -0.6f, std::nullopt, 0.8f,
+                                world.time().totalHours(),
+                                world.time().day());
+        }
+    };
+
+    // --- Procedural quests read reputation + economy state ---
+    g_questGen.reputation = &g_reputation;
+    g_questGen.economy    = &g_economy;
+
+    std::cout << "=== Living World ===\n";
+    std::cout << "  Economy: Greenhollow (pop 5) & Millbrook (pop 8) — "
+              << "Dagna farms, Elmund bakes, Brina forges\n";
+    std::cout << "  Households: ";
+    for (const auto& [id, h] : g_families.allHouseholds())
+        std::cout << h.name << " ";
+    std::cout << "\n\n";
+}
+
+void runLivingWorld(GameWorld& world, float simTime, float dt) {
+    const std::string timeStr = world.time().formatClock();
+    const double      simNow  = world.time().totalHours();
+
+    // --- Tick the systems ---
+    g_economy.update(simNow, dt);
+    g_reputation.update(dt);
+    g_families.update(simNow, dt);
+    g_soundscape.update(simNow);
+
+    // --- Economy chatter: report production & caravans as they happen ---
+    for (const auto& ev : g_economy.drainEvents()) {
+        const auto* item = g_economy.getItemInfo(ev.item);
+        std::string itemName = item ? item->name : "goods";
+        switch (ev.type) {
+            case EconomyEvent::Type::Produced:
+                std::cout << "[" << timeStr << "] [ECONOMY] " << ev.note
+                          << " produced " << ev.qty << "x " << itemName
+                          << " (stock: "
+                          << g_economy.settlement(ev.settlement)->stockOf(ev.item)
+                          << ")\n";
+                break;
+            case EconomyEvent::Type::Shortage:
+                std::cout << "[" << timeStr << "] [ECONOMY] SHORTAGE in "
+                          << ev.settlement << ": " << ev.qty << "x " << itemName
+                          << " missing — prices climbing ("
+                          << static_cast<int>(g_economy.localPrice(ev.settlement, ev.item))
+                          << "g)\n";
+                break;
+            case EconomyEvent::Type::CaravanDispatched:
+                std::cout << "[" << timeStr << "] [ECONOMY] Caravan loaded: "
+                          << ev.qty << "x " << itemName << ", " << ev.note << "\n";
+                break;
+            case EconomyEvent::Type::CaravanArrived:
+                std::cout << "[" << timeStr << "] [ECONOMY] Caravan arrived: "
+                          << ev.qty << "x " << itemName << ", " << ev.note << "\n";
+                break;
+            default: break;
+        }
+    }
+
+    // --- Scripted showcase beats (one-shot, keyed on sim time) ---
+    static bool doorSlam = false, pickpocket = false, theft = false,
+                questBoard = false, combatNoise = false;
+
+    // 09:00 — morning flavor: the inn door slams
+    if (!doorSlam && simTime >= 3.0f) {
+        doorSlam = true;
+        if (NPC* elmund = world.findNPC("Elmund")) {
+            g_soundscape.emit(NoiseType::DoorSlam, elmund->position, simNow,
+                              elmund->id, 0.9f, "inn door");
+            std::cout << "[" << timeStr << "] [SOUND] The inn door slams shut. ";
+            int hearers = 0;
+            for (const auto& n : world.npcs()) {
+                if (n->type == NPCType::Enemy || n->id == elmund->id) continue;
+                if (!g_soundscape.listen(n->position, simNow, 1.0f, n->id).empty())
+                    ++hearers;
+            }
+            if (hearers > 0)
+                std::cout << hearers << " villager(s) look up.\n";
+            else
+                std::cout << "The square stays quiet.\n";
+        }
+    }
+
+    // 11:00 — a drifter cuts Cedric's purse; Alaric sees it
+    if (!pickpocket && simTime >= 5.0f) {
+        pickpocket = true;
+        g_reputation.recordCrime(CrimeType::Pickpocketing, "Sly Fennick", "Cedric",
+                                 simNow, {"Alaric"}, 1.0f, "market square");
+        std::cout << "[" << timeStr << "] [CRIME] A drifter, Sly Fennick, cuts "
+                  << "Cedric's coin purse! Alaric witnessed it.\n";
+        std::cout << "[" << timeStr << "] [CRIME] Sly Fennick's reputation: "
+                  << static_cast<int>(g_reputation.reputationOf("Sly Fennick"))
+                  << " [" << g_reputation.labelOf("Sly Fennick") << "]\n";
+    }
+
+    // 13:00 — the same drifter steals Brina's tools; a bounty goes up
+    if (!theft && simTime >= 7.0f) {
+        theft = true;
+        g_reputation.recordCrime(CrimeType::Theft, "Sly Fennick", "Brina",
+                                 simNow, {"Dagna"}, 1.2f, "smithy");
+        float bounty = g_reputation.totalBountyOn("Sly Fennick");
+        std::cout << "[" << timeStr << "] [CRIME] Sly Fennick steals tools from "
+                  << "the smithy — Dagna raises the alarm!\n";
+        std::cout << "[" << timeStr << "] [CRIME] BOUNTY POSTED: "
+                  << static_cast<int>(bounty) << "g on Sly Fennick ["
+                  << g_reputation.labelOf("Sly Fennick") << "]"
+                  << (g_reputation.isOutlaw("Sly Fennick") ? " — OUTLAW" : "")
+                  << "\n";
+    }
+
+    // 14:00 — the quest board fills up from live world state
+    if (!questBoard && simTime >= 8.0f) {
+        questBoard = true;
+        auto batch = g_questGen.generateInto(g_questBoard, simNow, 6);
+        std::cout << "[" << timeStr << "] [QUESTS] The village quest board fills up ("
+                  << batch.size() << " new postings):\n";
+        for (const auto& g : batch) {
+            std::cout << "    <" << generatedQuestKindName(g.kind) << "> "
+                      << g.quest.title << " — reward "
+                      << static_cast<int>(g.quest.reward.gold) << "g\n";
+            std::cout << "        " << g.quest.description << "\n";
+        }
+    }
+
+    // Combat breaking out is LOUD — everyone nearby hears the clash
+    if (g_combatActive && !combatNoise) {
+        combatNoise = true;
+        if (NPC* alaric = world.findNPC("Alaric")) {
+            g_soundscape.emit(NoiseType::CombatClash, alaric->position, simNow,
+                              alaric->id, -1.0f, "steel on claws");
+            std::cout << "[" << timeStr << "] [SOUND] Steel rings out across the "
+                      << "village! Villagers who hear it:\n";
+            for (const auto& n : world.npcs()) {
+                if (n->type == NPCType::Enemy || n->id == alaric->id) continue;
+                auto urgent = g_soundscape.mostUrgent(n->position, simNow, 0.2f,
+                                                      1.0f, n->id);
+                if (urgent) {
+                    std::cout << "    " << n->name << " hears fighting (urgency "
+                              << std::fixed << std::setprecision(2)
+                              << urgent->urgency << ") and "
+                              << (urgent->urgency > 0.5f ? "rushes toward the sound!"
+                                                         : "keeps a wary distance.")
+                              << "\n";
+                }
+            }
+        }
+    }
+}
+
+void printLivingWorldSummary(GameWorld& world, float /*simTime*/) {
+    const double simNow = world.time().totalHours();
+
+    std::cout << "=== Living World Summary ===\n\n";
+
+    // --- Economy ---
+    std::cout << "  " << "Economy after one day:\n";
+    for (const auto& [name, s] : g_economy.settlements()) {
+        std::cout << "    [" << name << "] pop " << s.population << " — ";
+        bool first = true;
+        for (const auto& [id, qty] : s.stockpile) {
+            const auto* item = g_economy.getItemInfo(id);
+            if (!first) std::cout << ", ";
+            std::cout << (item ? item->name : "?") << ":" << qty
+                      << " @" << static_cast<int>(g_economy.localPrice(name, id)) << "g";
+            first = false;
+        }
+        std::cout << "\n";
+    }
+    std::cout << "    Caravans still on the road: "
+              << g_economy.caravansInTransit().size() << "\n\n";
+
+    // --- Reputation ---
+    std::cout << "  Reputation ledger:\n";
+    for (const auto& [id, rep] : g_reputation.allReputations()) {
+        std::cout << "    " << id << ": " << static_cast<int>(rep)
+                  << " [" << reputationLabel(rep) << "]";
+        float bounty = g_reputation.totalBountyOn(id);
+        if (bounty > 0.0f)
+            std::cout << " — bounty " << static_cast<int>(bounty) << "g";
+        std::cout << "\n";
+    }
+    std::cout << "    Open cases: " << g_reputation.openCrimes().size() << "\n\n";
+
+    // --- Families ---
+    std::cout << "  Households:\n";
+    for (const auto& [hid, h] : g_families.allHouseholds()) {
+        std::cout << "    " << h.name << " — wealth "
+                  << static_cast<int>(h.wealth) << "g:";
+        for (const auto& mid : h.members) {
+            const auto* m = g_families.tryGet(mid);
+            std::cout << " " << mid << "(" << (m ? static_cast<int>(m->age) : 0) << ")";
+        }
+        std::cout << "\n";
+    }
+    std::cout << "\n";
+
+    // --- Quest board ---
+    std::cout << "  Quest board (" << g_questBoard.allQuests().size()
+              << " postings):\n";
+    for (const auto& [id, q] : g_questBoard.allQuests())
+        std::cout << "    [" << questStatusToString(q.status) << "] "
+                  << q.title << "\n";
+    std::cout << "\n";
+
+    // --- Save / load roundtrip ---
+    WorldSaveGame sg;
+    sg.relationships = &g_relationships;
+    sg.reputation    = &g_reputation;
+    sg.economy       = &g_economy;
+    sg.families      = &g_families;
+
+    const std::string savePath = "aithena_world_save.json";
+    if (sg.save(savePath, simNow)) {
+        // Verify: load into fresh systems and compare key counts
+        RelationshipSystem rel2;
+        ReputationSystem   rep2;
+        FamilySystem       fam2;
+        EconomySystem      eco2;
+        WorldSaveGame      sg2;
+        sg2.relationships = &rel2;
+        sg2.reputation    = &rep2;
+        sg2.families      = &fam2;
+        sg2.economy       = &eco2;
+        auto loaded = sg2.load(savePath);
+        bool ok = loaded.has_value()
+               && rel2.pairCount()          == g_relationships.pairCount()
+               && rep2.crimeCount()         == g_reputation.crimeCount()
+               && fam2.allMembers().size()  == g_families.allMembers().size()
+               && eco2.settlements().size() == g_economy.settlements().size();
+        std::cout << "  World snapshot: saved to " << savePath
+                  << " and reloaded — " << (ok ? "verified OK" : "MISMATCH!") << "\n";
+        std::cout << "    (" << g_relationships.pairCount() << " relationship pairs, "
+                  << g_reputation.crimeCount() << " crimes, "
+                  << g_families.allMembers().size() << " family members, "
+                  << g_economy.settlements().size() << " settlements)\n\n";
+    }
 }

@@ -1,6 +1,7 @@
 # Aithena
 
 [![CI](https://github.com/sa-aris/aithena/actions/workflows/ci.yml/badge.svg)](https://github.com/sa-aris/aithena/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/sa-aris/aithena?label=release&color=blue)](https://github.com/sa-aris/aithena/blob/main/CHANGELOG.md)
 [![Live Demo](https://img.shields.io/badge/demo-GitHub_Pages-brightgreen)](https://sa-aris.github.io/aithena/)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -9,7 +10,7 @@
 [![Lua](https://img.shields.io/badge/Lua-5.4-2C2D72?logo=lua)](https://www.lua.org/)
 [![C API](https://img.shields.io/badge/C_API-Unity%20%7C%20Unreal%20%7C%20Godot-orange.svg)](#c-api--unity--unreal--godot)
 
-**Aithena** is a self-contained NPC AI framework for games, written in C++17. Drop the `include/` directory into any project and you get 20 interconnected systems — from low-level pathfinding and spatial queries to high-level faction politics, relationship history, and narrative-aware dialogue hooks.
+**Aithena** is a self-contained NPC AI framework for games, written in C++17. Drop the `include/` directory into any project and you get 26 interconnected systems — from low-level pathfinding and spatial queries to high-level faction politics, relationship history, procedural quests, a living economy, and narrative-aware dialogue hooks.
 
 No dependencies. No engine lock-in. No runtime overhead you didn't ask for.
 
@@ -182,6 +183,38 @@ g_influence.seed({msgId, "wolves at the gate", originatorId, "Alaric",
 **Simulation Manager** — Orchestrates the full update pipeline each frame in the correct order: event bus drain → time system → weather → world events → LOD classification → AI ticks → spatial index sync → autosave. Handles NPC spawn/despawn with automatic event subscription cleanup.
 
 **Serialization** — Zero-dependency JSON parser/writer with full spec support and a friend-accessor-based NPC serializer. Saves full NPC state including personality, combat stats, emotion intensities, skill levels, and memory content. Supports incremental diffs for bandwidth-efficient sync.
+
+### Living World *(new in 1.1)*
+
+**Reputation & Crime** — Reputation is what the *community* believes about an NPC, complementing the relationship system's one-to-one feelings. Crimes (trespassing → murder) only damage reputation if witnessed; unwitnessed crimes are stored as unsolved cases that can surface later through investigation or gossip. Serious witnessed crimes post gold bounties, and guards act on outlaws on sight. A per-witness hook lets you fan crime reports out through the memory/gossip systems.
+
+```cpp
+ReputationSystem rep;
+rep.onCrimeWitnessed = [&](const std::string& witness, const CrimeRecord& crime) {
+    // push a Memory into the witness → it spreads through gossip organically
+};
+rep.recordCrime(CrimeType::Theft, "Fennick", "Cedric", simTime, {"Alaric"});
+rep.isOutlaw("Fennick");        // true once bounty is posted
+rep.totalBountyOn("Fennick");   // 60g
+```
+
+**Dynamic Economy** — Settlement-level production/consumption simulation that feeds the per-merchant `TradeSystem`. Producers convert inputs into goods on labor-hour schedules (farmer → wheat → baker → bread), populations consume stockpiles daily, local prices follow a `(target/stock)^elasticity` curve, and caravans automatically arbitrage price gaps between settlements — creating supply lines you can raid or protect.
+
+**Procedural Quest Generator** — Instead of hand-authoring quests, the generator inspects live world state and turns it into ready-to-register `Quest` objects: unsolved bounty crimes become manhunts, market shortages become supply runs, mutual feuds become mediation quests, close friendships spawn gift deliveries, and caravans on the road request escorts. Every source situation is fingerprinted so the same feud never spawns duplicates.
+
+**Family & Lifecycle** — Households, marriage (optionally gated on relationship values, with kinship checks), children, aging through four life stages, mortality that ramps past elder age, and inheritance that splits estates between spouse and children. All transitions surface as `LifecycleEvent`s you can drain into the event bus, memories, or quest generation — enough to run generational sims.
+
+**Sound Perception** — Discrete noise events (a scream, a door slam, steel on steel) emitted into the world, attenuated by distance and walls, delivered to whoever could hear them. Faint sounds are localized poorly — listeners get a degraded position estimate to investigate. Bridges directly into `PerceptionSystem` as `SensoryInput`.
+
+**World Save/Load** — `WorldSaveGame` bundles relationships (with event history), reputation & crimes, economy state, and families into one versioned JSON file, with custom section hooks for game-specific data. Round-trips through the zero-dependency JSON layer.
+
+```cpp
+WorldSaveGame sg;
+sg.relationships = &rel;  sg.reputation = &rep;
+sg.economy       = &eco;  sg.families   = &fam;
+sg.save("world.json", simTime);
+auto restoredTime = sg.load("world.json");  // std::optional<double>
+```
 
 ### Threading
 
@@ -564,28 +597,33 @@ The LOD system is designed so that a world with thousands of NPCs consumes rough
 ## Project layout
 
 ```
-NPC/
+aithena/
 ├── include/npc/
 │   ├── core/           types, vec2, random
 │   ├── event/          event_system — typed pub-sub bus
 │   ├── ai/             fsm, behavior_tree, utility_ai, goap, blackboard, shared_blackboard
-│   ├── perception/     sight cone, hearing, line-of-sight
+│   ├── perception/     sight cone, hearing, line-of-sight,
+│   │                   sound_perception — noise events, investigation targets
 │   ├── memory/         episodic memory, decay stages, gossip
 │   ├── emotion/        emotion state, needs, contagion
 │   ├── personality/    trait system, multipliers
 │   ├── combat/         threat model, abilities, resources
 │   ├── dialog/         branching trees, reputation variants
 │   ├── trade/          dynamic pricing, transactions
+│   ├── economy/        economy_system — production chains, consumption, caravans
 │   ├── schedule/       daily routines, time-of-day planner
-│   ├── quest/          definition, tracking, events
+│   ├── quest/          definition, tracking, events,
+│   │                   quest_generator — procedural quests from world state
 │   ├── skill/          XP, levels, perks, bonuses
 │   ├── navigation/     A*, NavRegions, PathCache, WaypointGraph, steering
 │   ├── social/         faction_system, relationship_system, group_behavior,
-│   │                   influence_chain — rumour propagation, hop recording
+│   │                   influence_chain — rumour propagation, hop recording,
+│   │                   reputation_system — crimes, witnesses, bounties,
+│   │                   family_system — households, marriage, inheritance
 │   ├── world/          world, time, weather, spatial_index, lod_system,
 │   │                   simulation_manager, world_event_manager
 │   ├── threading/      thread_safety, task_scheduler, parallel_ticker
-│   ├── serialization/  json, npc_serializer
+│   ├── serialization/  json, npc_serializer, save_load — world snapshots
 │   ├── scripting/      lua_bridge — Lua 5.4 scripting bridge
 │   ├── npc_capi.h      — pure-C binding layer (Unity / Unreal / Godot FFI)
 │   └── npc.hpp         main NPC composite class
@@ -606,7 +644,7 @@ NPC/
 │   └── run_benchmarks.cpp  — performance suite (build with -DNPC_BENCHMARKS=ON)
 ├── tests/
 │   ├── test_runner.hpp — zero-dependency test framework
-│   └── run_tests.cpp   — test suite (~75 tests)
+│   └── run_tests.cpp   — test suite (137 tests)
 └── .github/workflows/
     ├── ci.yml          — GCC 12 + Clang 15 + macOS matrix
     └── pages.yml       — Emscripten WASM build + GitHub Pages deploy

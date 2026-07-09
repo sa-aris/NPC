@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(Aithena
-    VERSION 1.0.0
-    DESCRIPTION "C++17 NPC AI framework — FSM, behavior trees, emotions, memory, pathfinding, relationships, Lua scripting"
+    VERSION 1.1.0
+    DESCRIPTION "C++17 NPC AI framework — FSM, behavior trees, emotions, memory, pathfinding, relationships, living economy, procedural quests, Lua scripting"
     LANGUAGES CXX
 )
 

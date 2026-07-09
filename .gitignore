@@ -37,3 +37,4 @@ _CPack_Packages/
 saves/
 *.npc.json
 *.world.json
+aithena_world_save.json

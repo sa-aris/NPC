@@ -5,12 +5,13 @@ import os
 
 class AithenaConan(ConanFile):
     name        = "aithena"
-    version     = "1.0.0"
+    version     = "1.1.0"
     license     = "MIT"
     url         = "https://github.com/sa-aris/aithena"
     homepage    = "https://github.com/sa-aris/aithena"
     description = ("C++17 NPC AI framework — FSM, behavior trees, emotions, "
-                   "memory, pathfinding, relationships, Lua scripting, "
+                   "memory, pathfinding, relationships, living economy, "
+                   "procedural quests, Lua scripting, "
                    "and C API for Unity/Unreal/Godot")
     topics      = ("gamedev", "npc", "ai", "game-ai", "cpp17")
     settings    = "os", "compiler", "build_type", "arch"

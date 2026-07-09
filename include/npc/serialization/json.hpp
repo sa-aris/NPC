@@ -10,6 +10,7 @@
 #include <sstream>
 #include <fstream>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 

@@ -13,6 +13,9 @@
 #include "npc/world/world.hpp"
 #include "npc/social/relationship_system.hpp"
 #include "npc/social/influence_chain.hpp"
+#include "npc/social/reputation_system.hpp"
+#include "npc/perception/sound_perception.hpp"
+#include "npc/quest/quest_generator.hpp"
 
 #include <memory>
 #include <vector>
@@ -29,7 +32,7 @@ using namespace npc;
 
 // ─── Log ──────────────────────────────────────────────────────────────────────
 
-enum class LogType { Info, Social, Influence, Memory, Emotion, Event };
+enum class LogType { Info, Social, Influence, Memory, Emotion, Event, Crime, Quest };
 
 struct LogEntry {
     std::string time;
@@ -42,6 +45,9 @@ struct LogEntry {
 static std::unique_ptr<GameWorld>   g_world;
 static RelationshipSystem           g_rel;
 static InfluenceChainSystem         g_influence;
+static ReputationSystem             g_reputation;
+static SoundscapeSystem             g_soundscape;
+static QuestGenerator               g_questGen;
 static bool                         g_initialized = false;
 static std::vector<LogEntry>        g_pendingLog;
 static std::map<std::string, bool>  g_fired;
@@ -264,7 +270,7 @@ static void fireEvents(float h) {
         }
     }
 
-    // 11:00 — Thief at market
+    // 11:00 — Thief at market (feeds the reputation & crime system)
     if (h >= 11.0f && !g_fired["thief"]) {
         g_fired["thief"] = true;
         auto* a = find("Alaric"); auto* c = find("Cedric");
@@ -279,6 +285,18 @@ static void fireEvents(float h) {
                                 -0.4f, std::nullopt, 0.6f, h);
         }
         logE(LogType::Event, "!! THIEF SPOTTED at the market — Alaric gives chase!");
+
+        g_reputation.recordCrime(CrimeType::Theft, "Market Thief", "Cedric",
+                                 h, {"Alaric"}, 1.2f, "Market");
+        logE(LogType::Crime, "CRIME witnessed: Market Thief robbed Cedric's stall. "
+                             "Reputation: "
+                             + std::to_string(static_cast<int>(
+                                   g_reputation.reputationOf("Market Thief")))
+                             + " [" + g_reputation.labelOf("Market Thief") + "]");
+        logE(LogType::Crime, "BOUNTY POSTED: "
+                             + std::to_string(static_cast<int>(
+                                   g_reputation.totalBountyOn("Market Thief")))
+                             + "g on the Market Thief");
     }
 
     // 14:00 — Wolf attack: fear wave + panic influence
@@ -307,6 +325,21 @@ static void fireEvents(float h) {
                                 -0.5f, a ? std::make_optional(a->id) : std::nullopt, 0.9f, h);
         }
         logE(LogType::Event, "!!! WOLF PACK ATTACKS THE VILLAGE !!!");
+
+        // The clash of combat is a LOUD noise event — see who hears it
+        if (a) {
+            g_soundscape.emit(NoiseType::CombatClash, a->position, h,
+                              a->id, -1.0f, "wolf fight");
+            for (const auto& n : npcs) {
+                if (n->id == a->id) continue;
+                auto urgent = g_soundscape.mostUrgent(n->position, h, 0.2f,
+                                                      1.0f, n->id);
+                if (urgent)
+                    logE(LogType::Event,
+                         "SOUND: " + n->name + " hears the fighting (urgency "
+                         + std::to_string(urgent->urgency).substr(0, 4) + ")");
+            }
+        }
     }
 
     // 15:30 — Post-combat: relief + hero narrative
@@ -334,6 +367,19 @@ static void fireEvents(float h) {
             npcs[k]->emotions.satisfyNeed(NeedType::Social, 10.0f);
         }
         logE(LogType::Social, "Village meeting at the Square — all gather to discuss the attack.");
+    }
+
+    // 16:30 — Quest board: procedural quests from the day's events
+    if (h >= 16.5f && !g_fired["questboard"]) {
+        g_fired["questboard"] = true;
+        auto batch = g_questGen.generate(h, 4);
+        logE(LogType::Quest, "The village quest board fills up ("
+                             + std::to_string(batch.size()) + " posting"
+                             + (batch.size() == 1 ? "" : "s") + "):");
+        for (const auto& g : batch)
+            logE(LogType::Quest, g.quest.title + " — reward "
+                                 + std::to_string(static_cast<int>(g.quest.reward.gold))
+                                 + "g");
     }
 
     // 19:00 — Evening festival
@@ -422,6 +468,8 @@ static std::string buildStateJson() {
                       : e.type == LogType::Influence ? "influence"
                       : e.type == LogType::Memory    ? "memory"
                       : e.type == LogType::Emotion   ? "emotion"
+                      : e.type == LogType::Crime     ? "crime"
+                      : e.type == LogType::Quest     ? "quest"
                       :                                "event";
         j << "{\"time\":" << jstr(e.time)
           << ",\"type\":" << jstr(t)
@@ -441,6 +489,10 @@ WASM_EXPORT void npc_init() {
     g_world       = std::make_unique<GameWorld>(40, 25);
     g_rel         = RelationshipSystem{};
     g_influence   = InfluenceChainSystem{};
+    g_reputation  = ReputationSystem{};
+    g_soundscape.clear();
+    g_questGen    = QuestGenerator{};
+    g_questGen.reputation = &g_reputation;
     g_fired.clear();
     g_pendingLog.clear();
     g_influencedThisStep.clear();
@@ -512,6 +564,8 @@ WASM_EXPORT const char* npc_step(float dt) {
     fireEvents(h);
     g_world->update(dt);
     g_rel.update(h, dt);
+    g_reputation.update(dt);
+    g_soundscape.update(h);
     processContagion();
     processInfluence(h);
     processMemoryDecay();

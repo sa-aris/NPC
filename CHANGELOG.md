@@ -6,11 +6,29 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [1.1.0] — 2026-07-09
+
+### Added
+
+**Living World update — six new systems**
+- Reputation & Crime system (`social/reputation_system.hpp`) — witnessed crimes damage community reputation, unwitnessed crimes become unsolved cases, serious crimes post gold bounties, guards act on outlaws; per-witness hook for gossip/memory integration
+- Dynamic economy (`economy/economy_system.hpp`) — settlement-level production chains, per-capita consumption, `(target/stock)^elasticity` price curves, and caravans that auto-arbitrage price gaps between settlements
+- Procedural quest generator (`quest/quest_generator.hpp`) — turns live world state into ready-to-register quests: bounty hunts from unsolved crimes, supply runs from shortages, mediations from feuds, gift deliveries from friendships, caravan escorts; situation fingerprinting prevents duplicates
+- Family & lifecycle system (`social/family_system.hpp`) — households, marriage with kinship and relationship gates, children, four life stages, age-ramped mortality, and estate inheritance; all transitions emit drainable `LifecycleEvent`s
+- Sound perception (`perception/sound_perception.hpp`) — discrete noise events attenuated by distance and walls, degraded position estimates for faint sounds, urgency-ranked investigation targets, `SensoryInput` bridge into `PerceptionSystem`
+- World save/load (`serialization/save_load.hpp`) — `WorldSaveGame` bundles relationships (with event history), reputation & crimes, economy, and families into one versioned JSON file with custom section hooks
+
+**Demos & tests**
+- Village simulation now runs the living-world systems: a working village economy with caravans, a crime-and-bounty storyline, a soundscape that reacts to the wolf attack, a procedurally filled quest board, and a save/load roundtrip verification
+- Browser demo (WASM) gained reputation/crime and quest-board log events with new `crime` and `quest` log tags
+- 51 new unit tests (137 total) covering all six systems plus cross-system integration
 
 ### Changed
 - Completed the project-wide rename to **Aithena** — demo page title, console banners, benchmark output, CI summary, and source file headers now all use the new name
 - Live demo links now point to the renamed GitHub Pages URL (`sa-aris.github.io/aithena`)
+
+### Fixed
+- `serialization/json.hpp` now includes `<cstdint>` — it previously failed to compile when included before any header that pulled in the fixed-width integer types
 
 ---
 
@@ -77,4 +95,5 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+[1.1.0]: https://github.com/sa-aris/aithena/releases/tag/v1.1.0
 [1.0.0]: https://github.com/sa-aris/aithena/releases/tag/v1.0.0
