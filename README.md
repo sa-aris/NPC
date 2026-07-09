@@ -1,7 +1,7 @@
 # Aithena
 
 [![CI](https://github.com/sa-aris/aithena/actions/workflows/ci.yml/badge.svg)](https://github.com/sa-aris/aithena/actions/workflows/ci.yml)
-[![Live Demo](https://img.shields.io/badge/demo-GitHub_Pages-brightgreen)](https://sa-aris.github.io/NPC/)
+[![Live Demo](https://img.shields.io/badge/demo-GitHub_Pages-brightgreen)](https://sa-aris.github.io/aithena/)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Header-only](https://img.shields.io/badge/header--only-yes-green.svg)](#integration)
@@ -13,13 +13,13 @@
 
 No dependencies. No engine lock-in. No runtime overhead you didn't ask for.
 
-![NPC Behavior System demo](demo.gif)
+![Aithena demo](demo.gif)
 
 ---
 
 ## Live Demo
 
-**[→ sa-aris.github.io/NPC](https://sa-aris.github.io/NPC/)** — compiled to WebAssembly via Emscripten, runs entirely in the browser.
+**[→ sa-aris.github.io/aithena](https://sa-aris.github.io/aithena/)** — compiled to WebAssembly via Emscripten, runs entirely in the browser.
 
 A five-NPC village simulation plays out in real time. The demo visualises:
 - Emotional state of each NPC with colour-coded contagion spreading between nearby characters

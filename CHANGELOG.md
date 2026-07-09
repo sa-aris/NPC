@@ -6,6 +6,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Changed
+- Completed the project-wide rename to **Aithena** — demo page title, console banners, benchmark output, CI summary, and source file headers now all use the new name
+- Live demo links now point to the renamed GitHub Pages URL (`sa-aris.github.io/aithena`)
+
+---
+
 ## [1.0.0] — 2026-03-10
 
 ### Added

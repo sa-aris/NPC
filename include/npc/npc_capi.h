@@ -1,5 +1,5 @@
 /**
- * npc_capi.h — Pure C interface for the NPC Behavior System
+ * npc_capi.h — Pure C interface for Aithena
  *
  * Drop-in binding layer for Unity (C# P/Invoke), Unreal Engine (native plugin),
  * Godot (GDExtension / GDNative), or any language with a C FFI.

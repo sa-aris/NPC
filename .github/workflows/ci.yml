@@ -92,7 +92,7 @@ jobs:
 
       - name: Write job summary
         run: |
-          echo "## NPC Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "## Aithena Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "\`--quick\` mode (5 iterations), Release build, GCC 12, Ubuntu 22.04" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

@@ -1,6 +1,6 @@
 /*
  * =======================================================================
- *  NPC Behavior System - Phase 2: Medieval Village Simulation Demo
+ *  Aithena - Medieval Village Simulation Demo
  * =======================================================================
  *
  *  Demonstrates ALL subsystems working together with 4 major improvements:
@@ -89,8 +89,8 @@ void printInfluenceChainSummary(GameWorld& world);
 int main() {
     std::cout << R"(
  +============================================================+
- |   NPC Behavior System - Phase 2: Full Village Simulation    |
- |   Hybrid AI + Social + Advanced Combat + World Events       |
+ |   Aithena - Full Village Simulation                        |
+ |   Hybrid AI + Social + Advanced Combat + World Events      |
  +============================================================+
 )" << "\n";
 

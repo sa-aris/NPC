@@ -1,5 +1,5 @@
 /**
- * npc_capi.cpp — C ABI implementation for the NPC Behavior System
+ * npc_capi.cpp — C ABI implementation for Aithena
  *
  * Wraps the C++17 npc:: objects behind the pure-C interface declared in
  * include/npc/npc_capi.h.  All allocations are done with new/delete so

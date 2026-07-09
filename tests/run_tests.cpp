@@ -1,4 +1,4 @@
-// run_tests.cpp — comprehensive test suite for NPC behavior system
+// run_tests.cpp — comprehensive test suite for Aithena
 // Compile: g++ -std=c++17 -I../include -O2 -o run_tests run_tests.cpp
 // Run:     ./run_tests       (dot output)
 //          ./run_tests -v    (verbose)

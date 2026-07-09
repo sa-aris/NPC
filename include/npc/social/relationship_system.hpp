@@ -1,6 +1,6 @@
 #pragma once
 // relationship_system.hpp — NPC relationship graph with event history, decay, narrative
-// Part of the NPC behavior system (C++17, header-only)
+// Part of Aithena (C++17, header-only)
 // G28: event history, numeric value, decay, narrative summary
 
 #include <string>

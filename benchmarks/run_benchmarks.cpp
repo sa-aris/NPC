@@ -1,5 +1,5 @@
 /**
- * run_benchmarks.cpp — NPC Behavior System Performance Benchmarks
+ * run_benchmarks.cpp — Aithena Performance Benchmarks
  *
  * Answers the core question: "How many NPCs can this handle at once?"
  *
@@ -536,7 +536,7 @@ int main(int argc, char* argv[])
     if (!g_csv) {
         std::cout << "\n";
         std::cout << "================================================================\n";
-        std::cout << "  NPC Behavior System — Performance Benchmarks\n";
+        std::cout << "  Aithena — Performance Benchmarks\n";
         std::cout << "  Build: Release | C++17\n";
         std::cout << "  Iterations per measurement: " << ITERS << "\n";
         std::cout << "  Budget reference: 16.67 ms (60 Hz frame)\n";

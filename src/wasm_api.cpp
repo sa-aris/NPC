@@ -1,4 +1,4 @@
-// wasm_api.cpp — WASM entry point for the NPC Behavior System browser demo.
+// wasm_api.cpp — WASM entry point for the Aithena browser demo.
 // Compiles only with Emscripten (guarded in CMakeLists.txt).
 // Exposes C functions that return JSON state each simulation step.
 
