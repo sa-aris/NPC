@@ -141,6 +141,8 @@
   .tag-memory    { background: #1a0030; color: var(--memory); }
   .tag-social    { background: #0d2618; color: var(--social); }
   .tag-info      { background: #21262d; color: var(--dim); }
+  .tag-crime     { background: #330d0d; color: var(--negative); }
+  .tag-quest     { background: #322d00; color: var(--happy); }
 
   /* ── Emotion colors ── */
   .emo-Happy     { color: var(--happy); }
@@ -178,6 +180,8 @@
   <span class="badge">Emotion Contagion</span>
   <span class="badge">Memory Decay</span>
   <span class="badge">Influence Chains</span>
+  <span class="badge">Reputation &amp; Crime</span>
+  <span class="badge">Procedural Quests</span>
   <div class="controls">
     <span id="tod-display">Dawn</span>
     <span id="time-display">06:00</span>
@@ -390,6 +394,7 @@ function renderChains(chains) {
 const TAG_CLASS = {
   event: 'tag-event', influence: 'tag-influence',
   memory: 'tag-memory', social: 'tag-social', info: 'tag-info',
+  crime: 'tag-crime', quest: 'tag-quest',
 };
 function appendLog(entries) {
   const body = document.getElementById('log-body');
