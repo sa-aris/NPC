@@ -2,7 +2,7 @@ name: Build WASM + Deploy to GitHub Pages
 
 on:
   push:
-    branches: ["claude/**", main]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
