@@ -1,0 +1,28 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: |
+            Aithena ${{ github.ref_name }} — Living World update
+
+            Reputation & crime, dynamic economy, procedural quest generation,
+            families & lifecycle, sound perception, and world save/load.
+            137 tests passing. See CHANGELOG.md for details.
+          draft: false
+          prerelease: false
