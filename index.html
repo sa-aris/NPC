@@ -79,7 +79,13 @@
   .panel-body { flex: 1; overflow-y: auto; padding: 8px 12px; }
 
   /* ── Map ── */
-  #map-panel { grid-row: 1 / 3; }
+  /* Explicit placement: left column = map + log, right column = NPCs + chains.
+     (A grid-row span here used to push the log into an implicit row and
+     collapse the chains panel to zero height.) */
+  #map-panel   { grid-column: 1; grid-row: 1; }
+  #npc-panel   { grid-column: 2; grid-row: 1; }
+  #log-panel   { grid-column: 1; grid-row: 2; }
+  #chain-panel { grid-column: 2; grid-row: 2; }
   #map {
     font-size: 11px; line-height: 1.35; white-space: pre;
     color: var(--dim); font-family: inherit;
@@ -437,13 +443,15 @@ function tick() {
 }
 
 // ── WASM bootstrap ────────────────────────────────────────────────────────────
-window.NpcModule = {
-  onRuntimeInitialized() {
-    Module = window.NpcModule;
+// npc_wasm.js is built with -sMODULARIZE=1 -sEXPORT_NAME=NpcModule, so it
+// defines a factory function that must be called to instantiate the module.
+window.addEventListener('load', () => {
+  NpcModule().then((m) => {
+    Module = m;
     Module._npc_init();
     tickTimer = setInterval(tick, 120);
-  }
-};
+  }).catch((err) => console.error('WASM init failed:', err));
+});
 </script>
 
 <!-- Emscripten-generated module -->
